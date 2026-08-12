@@ -152,6 +152,10 @@ cmake -S . -B build -DCMAKE_CXX_COMPILER=g++-16 \
 | `interop_tt` | byte-compare on protobuf's own `test_messages_proto3.proto` |
 | `conformance` | official protobuf conformance runner against `conformance_ours` |
 
+GitHub Actions (`.github/workflows/ci.yml`) builds inside the official
+`gcc:16` container and runs the full suite plus a consumer smoke test on
+every push.
+
 `verification/cpp26-features/run.sh` re-runs the one-file-per-claim
 compiler-behavior probes backing the notes in `AGENTS.md` and
 `docs/reflect_error.md`.
@@ -210,9 +214,6 @@ verification/   one-file compiler-behavior probes (run.sh)
   (401-418).
 - **Enforce the RECOMMENDED conformance level** (currently only REQUIRED
   is enforced; packed/unpacked output-form alternatives are warnings).
-- **CI**: GitHub Actions workflow building with g++-16 (needs the
-  stonking/26.10 archive or a compatible image) and running `ctest`,
-  including the conformance suite.
 - **Benchmarks** against the official implementation and micro-optimizing
   the hot serialization/parsing paths — the evidence that decides whether
   the experiment is worth continuing.

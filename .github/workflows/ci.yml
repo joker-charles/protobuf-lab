@@ -4,27 +4,26 @@ on:
   push:
   pull_request:
 
+# Runs inside the official gcc:16 container (Debian trixie, g++ 16.1+ with
+# -freflection).  This deliberately avoids adding the Ubuntu 26.10
+# "stonking" apt suite to the Noble (24.04) runner: apt would upgrade
+# base packages like base-files, which broke dpkg with a usr-merge
+# diversion clash.
+
 jobs:
   build:
     name: build + test
     runs-on: ubuntu-latest
+    container:
+      image: gcc:16
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install g++-16 (Ubuntu 26.10 "stonking" dev archive)
-        run: |
-          sudo tee /etc/apt/sources.list.d/stonking.sources >/dev/null <<'EOF'
-          Types: deb
-          URIs: http://mirrors.tuna.tsinghua.edu.cn/ubuntu/
-          Suites: stonking stonking-updates
-          Components: main universe
-          Signed-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg
-          EOF
-          sudo apt-get update
-          sudo apt-get install -y g++-16
+      - name: Install cmake, git, ca-certificates
+        run: apt-get update && apt-get install -y --no-install-recommends cmake git ca-certificates
 
       - name: Configure
-        run: cmake -S . -B build -DCMAKE_CXX_COMPILER=g++-16 -DCMAKE_BUILD_TYPE=Release
+        run: cmake -S . -B build -DCMAKE_CXX_COMPILER=g++ -DCMAKE_BUILD_TYPE=Release
 
       - name: Build
         run: cmake --build build -j2
@@ -38,25 +37,18 @@ jobs:
   consumer:
     name: consumer smoke test
     runs-on: ubuntu-latest
+    container:
+      image: gcc:16
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install g++-16 (Ubuntu 26.10 "stonking" dev archive)
-        run: |
-          sudo tee /etc/apt/sources.list.d/stonking.sources >/dev/null <<'EOF'
-          Types: deb
-          URIs: http://mirrors.tuna.tsinghua.edu.cn/ubuntu/
-          Suites: stonking stonking-updates
-          Components: main universe
-          Signed-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg
-          EOF
-          sudo apt-get update
-          sudo apt-get install -y g++-16
+      - name: Install cmake, git, ca-certificates
+        run: apt-get update && apt-get install -y --no-install-recommends cmake git ca-certificates
 
       - name: Consume the codec via tests/consumer (FetchContent flow)
         run: |
           cmake -S tests/consumer -B /tmp/consumer-build \
-            -DCMAKE_CXX_COMPILER=g++-16 -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_CXX_COMPILER=g++ -DCMAKE_BUILD_TYPE=Release \
             -DREFLECT_PROTO_DIR="$GITHUB_WORKSPACE"
           cmake --build /tmp/consumer-build -j2
           /tmp/consumer-build/app

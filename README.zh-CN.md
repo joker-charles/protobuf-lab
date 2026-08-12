@@ -140,6 +140,9 @@ cmake -S . -B build -DCMAKE_CXX_COMPILER=g++-16 \
 | `interop_tt` | 与 protobuf 官方 `test_messages_proto3.proto` 逐字节比对 |
 | `conformance` | 官方 conformance runner 对 `conformance_ours` 跑全套 |
 
+GitHub Actions（`.github/workflows/ci.yml`，跑在官方 `gcc:16` 容器内）在
+每次 push 时构建并执行全套 `ctest` 与消费者冒烟测试。
+
 `verification/cpp26-features/run.sh` 重跑 AGENTS.md 与
 `docs/reflect_error.md` 中编译器行为结论对应的单文件探针。
 
@@ -193,8 +196,6 @@ verification/   单文件编译器行为探针（run.sh）
   Duration/Timestamp/FieldMask/Any（301-315）、fieldname*（401-418）。
 - **强制 RECOMMENDED 级 conformance**（当前只强制 REQUIRED；
   packed/unpacked 输出形式差异仅是警告）。
-- **CI**：GitHub Actions 用 g++-16（需 stonking/26.10 源或兼容镜像）
-  构建并跑 `ctest`，包含 conformance 套件。
 - **基准测试**：与官方实现对比、优化序列化/解析热路径——这是判断实验
   是否值得继续投入的证据。
 
