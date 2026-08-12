@@ -72,9 +72,21 @@ CMake target propagates automatically.
 include(FetchContent)
 FetchContent_Declare(reflect_proto
   GIT_REPOSITORY https://github.com/joker-charles/protobuf-lab.git
-  GIT_TAG main)  # pin a tag once releases exist
+  GIT_TAG v0.1.0)
 FetchContent_MakeAvailable(reflect_proto)
 target_link_libraries(your_target PRIVATE rpb)
+```
+
+### Alternatively: install and find_package
+
+```sh
+cmake --install build --prefix /usr/local   # codec.hpp + rpb CMake package
+```
+
+```cmake
+find_package(protobuf CONFIG REQUIRED)  # protobuf must be installed first
+find_package(rpb CONFIG REQUIRED)
+target_link_libraries(your_target PRIVATE rpb::rpb)
 ```
 
 ### Minimal example

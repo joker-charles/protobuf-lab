@@ -62,9 +62,21 @@ schema，没有 `.proto` 文件、没有代码生成步骤。需要 g++-16 的 C
 include(FetchContent)
 FetchContent_Declare(reflect_proto
   GIT_REPOSITORY https://github.com/joker-charles/protobuf-lab.git
-  GIT_TAG main)  # 有 release 后建议固定 tag
+  GIT_TAG v0.1.0)
 FetchContent_MakeAvailable(reflect_proto)
 target_link_libraries(your_target PRIVATE rpb)
+```
+
+### 或者：install + find_package
+
+```sh
+cmake --install build --prefix /usr/local   # 安装 codec.hpp 与 rpb CMake 包
+```
+
+```cmake
+find_package(protobuf CONFIG REQUIRED)  # 需要先装好 protobuf
+find_package(rpb CONFIG REQUIRED)
+target_link_libraries(your_target PRIVATE rpb::rpb)
 ```
 
 ### 最小示例

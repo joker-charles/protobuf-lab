@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(reflect_proto LANGUAGES CXX)
+project(reflect_proto VERSION 0.1.0 LANGUAGES CXX)
 
 # Experimental protobuf wire-format codec driven by C++26 static reflection
 # (P2996 + P3394R4 annotations).  Requires g++-16 (the system default g++
@@ -47,13 +47,38 @@ endfunction()
 # Consumers: FetchContent this repo and `target_link_libraries(... rpb)`.
 # The target propagates C++26, -freflection, and the protobuf dependency.
 add_library(rpb INTERFACE)
-target_include_directories(rpb INTERFACE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+target_include_directories(rpb INTERFACE
+  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/src>
+  $<INSTALL_INTERFACE:include>)
 target_link_libraries(rpb INTERFACE protobuf::libprotobuf)
 target_compile_features(rpb INTERFACE cxx_std_26)
 target_compile_options(rpb INTERFACE -freflection)
 
 add_executable(example examples/roundtrip.cpp)
 target_link_libraries(example PRIVATE rpb)
+
+# --- install / find_package packaging ----------------------------------
+include(CMakePackageConfigHelpers)
+include(GNUInstallDirs)
+
+install(FILES src/codec.hpp DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
+install(TARGETS rpb EXPORT rpbTargets)
+
+set(RPB_CMAKE_INSTALL_DIR ${CMAKE_INSTALL_LIBDIR}/cmake/rpb)
+configure_package_config_file(
+  cmake/rpbConfig.cmake.in
+  ${CMAKE_CURRENT_BINARY_DIR}/rpbConfig.cmake
+  INSTALL_DESTINATION ${RPB_CMAKE_INSTALL_DIR})
+write_basic_package_version_file(
+  ${CMAKE_CURRENT_BINARY_DIR}/rpbConfigVersion.cmake
+  COMPATIBILITY SameMajorVersion)
+install(FILES
+  ${CMAKE_CURRENT_BINARY_DIR}/rpbConfig.cmake
+  ${CMAKE_CURRENT_BINARY_DIR}/rpbConfigVersion.cmake
+  DESTINATION ${RPB_CMAKE_INSTALL_DIR})
+install(EXPORT rpbTargets
+  NAMESPACE rpb::
+  DESTINATION ${RPB_CMAKE_INSTALL_DIR})
 
 # --- codec binaries ----------------------------------------------------
 add_executable(reflect_proto src/main.cpp)

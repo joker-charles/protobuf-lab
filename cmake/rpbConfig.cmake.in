@@ -1,0 +1,10 @@
+@PACKAGE_INIT@
+
+include(CMakeFindDependencyMacro)
+# The installed rpb target links protobuf::libprotobuf, so consumers need
+# protobuf available: either installed (cmake --install of a protobuf
+# build) or fetched via FetchContent before find_package(rpb).
+find_dependency(protobuf CONFIG)
+
+include("${CMAKE_CURRENT_LIST_DIR}/rpbTargets.cmake")
+check_required_components(rpb)

@@ -1,0 +1,62 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  build:
+    name: build + test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install g++-16 (Ubuntu 26.10 "stonking" dev archive)
+        run: |
+          sudo tee /etc/apt/sources.list.d/stonking.sources >/dev/null <<'EOF'
+          Types: deb
+          URIs: http://mirrors.tuna.tsinghua.edu.cn/ubuntu/
+          Suites: stonking stonking-updates
+          Components: main universe
+          Signed-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg
+          EOF
+          sudo apt-get update
+          sudo apt-get install -y g++-16
+
+      - name: Configure
+        run: cmake -S . -B build -DCMAKE_CXX_COMPILER=g++-16 -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build
+        run: cmake --build build -j2
+
+      - name: Test
+        run: ctest --test-dir build --output-on-failure
+
+      - name: Run example
+        run: ./build/example
+
+  consumer:
+    name: consumer smoke test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install g++-16 (Ubuntu 26.10 "stonking" dev archive)
+        run: |
+          sudo tee /etc/apt/sources.list.d/stonking.sources >/dev/null <<'EOF'
+          Types: deb
+          URIs: http://mirrors.tuna.tsinghua.edu.cn/ubuntu/
+          Suites: stonking stonking-updates
+          Components: main universe
+          Signed-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg
+          EOF
+          sudo apt-get update
+          sudo apt-get install -y g++-16
+
+      - name: Consume the codec via tests/consumer (FetchContent flow)
+        run: |
+          cmake -S tests/consumer -B /tmp/consumer-build \
+            -DCMAKE_CXX_COMPILER=g++-16 -DCMAKE_BUILD_TYPE=Release \
+            -DREFLECT_PROTO_DIR="$GITHUB_WORKSPACE"
+          cmake --build /tmp/consumer-build -j2
+          /tmp/consumer-build/app
