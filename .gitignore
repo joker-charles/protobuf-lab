@@ -1,13 +1,11 @@
 # protobuf reference source and build artifacts
 protobuf-3.21.12/
 build*/
-reflect-proto/build/
-reflect-proto/tests/gen/
-reflect-proto/tests/gen_tt/
-reflect-proto/tests/ref
-reflect-proto/tests/ref.bin
-reflect-proto/tests/ours.bin
-reflect-proto/tests/ref_tt
-reflect-proto/tests/ref_tt.bin
-reflect-proto/tests/ours_tt.bin
+tests/gen*/
+tests/ref
+tests/ref.bin
+tests/ours.bin
+tests/ref_tt
+tests/ref_tt.bin
+tests/ours_tt.bin
 failing_tests.txt

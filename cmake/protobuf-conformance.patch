@@ -1,0 +1,12 @@
+--- a/cmake/conformance.cmake
++++ b/cmake/conformance.cmake
+@@ -22,7 +22,9 @@
+   ${protobuf_SOURCE_DIR}/conformance/binary_json_conformance_suite.h
+   ${protobuf_SOURCE_DIR}/conformance/conformance.pb.cc
+   ${protobuf_SOURCE_DIR}/conformance/conformance_test.cc
++  ${protobuf_SOURCE_DIR}/conformance/conformance_test_main.cc
+   ${protobuf_SOURCE_DIR}/conformance/conformance_test_runner.cc
++  ${protobuf_SOURCE_DIR}/conformance/text_format_conformance_suite.cc
+   ${protobuf_SOURCE_DIR}/conformance/third_party/jsoncpp/json.h
+   ${protobuf_SOURCE_DIR}/conformance/third_party/jsoncpp/jsoncpp.cpp
+   ${protobuf_SOURCE_DIR}/src/google/protobuf/test_messages_proto2.pb.cc

@@ -3,9 +3,10 @@
 ## Purpose
 
 This repo (`/home/joker/apps/protobuf-lab`) hosts an **experimental protobuf
-wire-format codec driven by C++26 static reflection** (`reflect-proto/`),
-plus a vendored Ubuntu protobuf 3.21.12 source tree used as the reference
-implementation (`protobuf-3.21.12/`, gitignored).
+wire-format codec driven by C++26 static reflection** (sources in `src/`),
+plus a local vendored protobuf 3.21.12 tree (`protobuf-3.21.12/`,
+gitignored) that doubles as the offline FetchContent cache.  Fresh clones
+fetch protobuf 3.21.12 from GitHub automatically (see CMakeLists.txt).
 
 The document below is the accumulated, **verified** modern-C++ knowledge from
 the coreutils factor pilot and this session. Read it before writing any
@@ -18,8 +19,9 @@ facts from web searches.
   **`g++-16`** (`/usr/bin/g++-16`, 16.1.0-2ubuntu1, installed from the
   stonking/26.10 archive).
   The system default `g++` is 15 and **rejects `-freflection`**.
-- Build with: `cmake -S reflect-proto -B reflect-proto/build
-  -DCMAKE_CXX_COMPILER=g++-16 -DCMAKE_BUILD_TYPE=Release`
+- Build with: `cmake -S . -B build -DCMAKE_CXX_COMPILER=g++-16
+  -DCMAKE_BUILD_TYPE=Release` (protobuf is fetched on first configure;
+  offline: `-DFETCHCONTENT_SOURCE_DIR_PROTOBUF=$PWD/protobuf-3.21.12`)
 - Flags: `-std=c++26 -freflection`. Contracts are on by default in C++26;
   `-fno-contracts` disables them. `-fno-exceptions -fno-rtti` are safe (no
   exceptions/RTTI used) and shrink the dynamic binary ~17%.
@@ -221,7 +223,7 @@ reflection-generated getopt table, `#embed` prime tables, contracts, and
 - Official-schema differential tests: `interop_tt` byte-compares our codec
   against protoc-generated code on protobuf's own
   `test_messages_proto3.proto` `TestAllTypesProto3` (mirror in
-  `reflect-proto/src/test_messages.hpp`). Recursive fields
+  `src/test_messages.hpp`). Recursive fields
   (`NestedMessage.corecursive`, `recursive_message`) are covered through
   `std::unique_ptr`; the 10-alternative oneof includes both string and
   bytes (via `rpb::Bytes`); Struct/Value/ListValue break their mutual
@@ -235,14 +237,15 @@ reflection-generated getopt table, `#embed` prime tables, contracts, and
   fixture keeps maps single-entry.
 - Official conformance suite: `conformance` ctest runs protobuf's
   `conformance_test_runner` against `conformance_ours` (a stdin/stdout
-  testee speaking the 4-byte-length-prefixed Conformance protocol).  Build
-  the runner with `tests/build_conformance_runner.sh` -- the vendored 3.21
-  `cmake/conformance.cmake` omits `conformance_test_main.cc` and
-  `text_format_conformance_suite.cc` (no `main()`, link failure), which
-  that script patches idempotently.  Status: 637 required proto3 binary
-  `protobuf_test` cases pass (incl. message-merge semantics, present-empty
-  messages via `unique_ptr`, unknown-field preservation); JSON/text/proto2
-  categories are skipped by the adapter.  Merge support came from parsing
+  testee speaking the 4-byte-length-prefixed Conformance protocol).  The
+  runner comes from FetchContent (`protobuf_BUILD_CONFORMANCE=ON`); the
+  vendored 3.21 `cmake/conformance.cmake` omits `conformance_test_main.cc`
+  and `text_format_conformance_suite.cc` (no `main()`, link failure), so
+  `cmake/protobuf-conformance.patch` is applied via `PATCH_COMMAND`.
+  Status: 637 required proto3 binary `protobuf_test` cases pass (incl.
+  message-merge semantics, present-empty messages via `unique_ptr`,
+  unknown-field preservation); JSON/text/proto2 categories are skipped by
+  the adapter.  Merge support came from parsing
   repeated occurrences of singular/oneof message fields into the existing
   value instead of replacing; RECOMMENDED-level packed/unpacked output-form
   alternatives show up as warnings only (not enforced).  The failure list

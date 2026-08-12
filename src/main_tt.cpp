@@ -65,8 +65,8 @@ static tmm::TestAllTypesProto3 make_fixture()
   p.repeated_bool = {true, false, true};
   p.repeated_string = {"a", "bb"};
   p.repeated_bytes = {std::string("\x01", 1), std::string("\x02\x03", 2)};
-  p.repeated_nested_message.push_back(tmm::NestedMessage{1, nullptr});
-  p.repeated_nested_message.push_back(tmm::NestedMessage{2, nullptr});
+  p.repeated_nested_message.push_back(tmm::NestedMessage{1, nullptr, {}});
+  p.repeated_nested_message.push_back(tmm::NestedMessage{2, nullptr, {}});
   p.repeated_foreign_message = {{3}, {4}};
   p.repeated_nested_enum = {tmm::NestedEnum::FOO, tmm::NestedEnum::NEG};
   p.repeated_foreign_enum = {tmm::ForeignEnum::FOREIGN_BAZ,
@@ -94,7 +94,7 @@ static tmm::TestAllTypesProto3 make_fixture()
   p.map_bool_bool = {{true, false}};
   p.map_string_string = {{"k", "v"}};
   p.map_string_bytes = {{"k", std::string("\x01\x02", 2)}};
-  p.map_string_nested_message["k"] = tmm::NestedMessage{7, nullptr};
+  p.map_string_nested_message["k"] = tmm::NestedMessage{7, nullptr, {}};
   p.map_string_foreign_message = {{"k", tmm::ForeignMessage{8}}};
   p.map_string_nested_enum = {{"k", tmm::NestedEnum::BAR}};
   p.map_string_foreign_enum = {{"k", tmm::ForeignEnum::FOREIGN_BAZ}};
@@ -143,7 +143,7 @@ static tmm::TestAllTypesProto3 make_fixture()
                             rpb::Unpacked<tmm::NestedEnum>{tmm::NestedEnum::NEG}};
 
   // Oneof: alternative B (oneof_nested_message).
-  p.oneof_field = tmm::NestedMessage{99, nullptr};
+  p.oneof_field = tmm::NestedMessage{99, nullptr, {}};
 
   // Optional wrappers.
   p.optional_bool_wrapper = std::make_unique<tmm::BoolValue>(true);
