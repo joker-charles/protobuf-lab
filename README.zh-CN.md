@@ -87,9 +87,11 @@ verification/   单文件编译器行为探针（run.sh）
 
 - **proto2**、**JSON**、**text format** 未实现；conformance testee 跳过
   这些类目。
-- **值语义 struct**：全默认的按值嵌套消息视为未设置而省略（无法表达
-  “设置了但为空”）；需要真实 presence 时用 `std::unique_ptr<T>` 或
-  `std::optional<T>`。
+- **按值消息成员**（仍然支持；如自测里的 `Person.home`）：全默认的按值
+  嵌套消息视为未设置而省略，因此这类成员无法表达“设置了但为空”。官方
+  `TestAllTypesProto3` 镜像已通过把所有单值消息成员改成 `std::unique_ptr`
+  绕开此限制；用户 struct 若保留按值成员，在需要真实 presence 时应使用
+  `std::unique_ptr<T>` / `std::optional<T>`。
 - **`std::optional<T>` 消息成员**重复出现时替换而非合并（普通成员与
   oneof 已实现合并）。
 - **多条目 map** 按排序序序列化；protobuf `Map` 是哈希序（未规定）。

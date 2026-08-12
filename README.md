@@ -95,9 +95,13 @@ verification/   one-file compiler-behavior probes (run.sh)
 
 - **proto2**, **JSON**, and **text format** are not implemented; the
   conformance testee skips those categories.
-- **Value-semantics structs**: an all-default by-value nested message is
-  treated as unset and omitted (present-but-empty cannot be expressed);
-  use `std::unique_ptr<T>` or `std::optional<T>` for real presence.
+- **Value-semantics struct members** (still supported; e.g. `Person.home`
+  in the selftests): an all-default by-value nested message is treated as
+  unset and omitted, so "present but empty" cannot be expressed for such
+  members.  The official `TestAllTypesProto3` mirror already avoids this by
+  using `std::unique_ptr` for every singular message member; user structs
+  that keep by-value members should reach for `std::unique_ptr<T>` /
+  `std::optional<T>` whenever real presence matters.
 - **`std::optional<T>` message members** replace on repeated occurrences
   instead of merging (merge is implemented for plain members and oneofs).
 - **Multi-entry maps** serialize in sorted key order; protobuf's `Map`
