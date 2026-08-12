@@ -126,19 +126,11 @@ facts from web searches.
   TU (no templates/contracts) the two modes are identical (263 vs 263 bytes
   .text) - the delta only shows up with real template/contract usage.
 
-### Verification note (2026-08-12)
+### Verification harness
 
-The reflection/contracts/#embed claims above were re-verified one by one on
-`g++-16` (16.0.1 20260322); the reproducible harness lives in
-`verification/cpp26-features/` (run `./run.sh`; see its README for the
-expected-outcome matrix).
-Wrong conclusions found and corrected this pass: (1) splices on `arr[i]`
-subscripts do NOT fail with a constant index; (2) casting a splice expression
-directly does NOT fail for bound constexpr infos (only for `template for`
-loop variables); (3) an earlier note had inverted the `template for` direct-
-splice vs by-value-helper claims (fixed above); (4) `members_of` needs
-`access_context`, `is_*` queries are `is_*_type`, and
-`contract_violation::comment()` is the accessor.
+The reflection/contracts/#embed claims above are backed by one-file-per-claim
+tests in `verification/cpp26-features/`; run `./run.sh` (needs g++-16) to
+re-verify. Wrong conclusions found in 2026-08 are corrected inline above.
 
 ### protobuf 3.21 API gotchas (verified while writing the codec)
 
@@ -166,43 +158,20 @@ CMake presets (`cpp23`, `cpp23-gmp`, `cpp26`, `cpp26-gmp`, `sanitize`,
 reflection-generated getopt table, `#embed` prime tables, contracts, and
 `std::expected`/`format`/`span` modernization. Consult it for idioms.
 
-## Current task state (protobuf codec)
+## Codec design conventions (reflect-proto)
 
-- `reflect-proto/src/codec.hpp`: reflection codec (field number = member
-  position + 1; string/bytes/integral/enum/float/double/sint (zigzag)/fixed
-  wrappers/packed vectors/optional/nested mapped per protobuf wire rules;
-  proto3 default-value omission; a trailing `rpb::UnknownFields` member
-  preserves and re-emits unknown fields; unknown groups are skipped) built
-  on protobuf's own `CodedOutputStream`/`CodedInputStream` - libprotobuf is
-  linked only for wire primitives, no descriptor/reflection runtime.
-- `reflect-proto/src/main.cpp`: self-tests (hand-computed bytes, roundtrip,
-  unknown-field capture + re-serialize, group skip, truncated input) +
-  `--emit`/`--parse-file` fixtures.
-- `reflect-proto/tests/`: `test.proto`, `ref_main.cc` (official protoc
-  reference), `interop.sh` (byte-compare ours vs official).
-- **Status**: committed (baseline `fc135c3`, wire extension `10ece28`,
-  proto3-semantics batch); builds with g++-16; `ctest` passes (selftest +
-  byte-level interop with official protoc covering enum, sint, fixed, packed
-  bool/enum/sint/fixed, bytes, repeated string).
-- **Next**: map support (`std::map<K,V>` -> entry messages with key=1 /
-  value=2); `[packed=false]` via `std::vector<rpb::Unpacked<T>>`; oneof
-  (needs an explicit field-number design, `std::variant`). A runtime
-  Descriptor/Reflection system is deliberately NOT planned - this project
-  exists to replace that layer with compile-time reflection.
-
-## Decisions (2026-08-12)
-
-- C++ modules: **not adopted**. GCC 16's C++20 modules are still
-  experimental (`-fmodules`), and the codec is header-only template code
-  where modules provide no ABI/macro/build benefit. Revisit only as a
-  separate demo target, never as a conversion of the working build.
-- Default-value omission, unknown-field preservation and group skipping are
-  implemented (proto3 semantics batch); runtime descriptor was ruled out.
-
-## Environment quirks
-
-- `.git`, `.agents`, `.codex` are **read-only tmpfs mounts** in the sandbox
-  root; the `.git` mount has been removed (2026-08-12) and git commits work.
-- Network is restricted: downloads require approval.
-- `/tmp` is disk-backed but treated as scratch; keep reference sources in
-  the repo directory.
+- Field number = member position + 1; adding, removing or reordering members
+  changes the wire format.
+- Type mapping: string/bytes -> LEN; integral/enum -> varint (sign-extended);
+  `SInt<T>` -> zigzag varint; `Fixed32/SFixed32` -> 4-byte LE;
+  `Fixed64/SFixed64` -> 8-byte LE; float/double -> 4/8-byte LE; packable
+  vectors -> packed LEN; `vector<string/message>` -> repeated LEN;
+  `optional<T>` -> presence; nested struct -> embedded message.
+- proto3 semantics: default-valued scalar/string/enum members and empty
+  packed vectors are omitted; nested messages and optionals-with-value always
+  serialize; empty repeated string elements still emit.
+- Unknown fields: a trailing `rpb::UnknownFields` member captures and re-emits
+  them (it must stay last so it does not shift field numbers); without it they
+  are skipped. Groups are skipped, not captured.
+- libprotobuf is linked only for wire primitives (`CodedInputStream`/
+  `CodedOutputStream`); there is no descriptor/reflection runtime by design.
