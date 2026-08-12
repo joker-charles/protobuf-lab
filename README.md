@@ -132,6 +132,8 @@ verification/   one-file compiler-behavior probes (run.sh)
 
 ## License
 
-TBD — choose a license before publishing.  The vendored protobuf 3.21.12
-reference tree (used only as an offline FetchContent cache) is not part of
-this repository.
+[GPLv2](LICENSE) (`GPL-2.0-only`).  GPLv2 is compatible with protobuf's
+BSD-3-Clause license (FSF lists BSD-3-Clause as GPL-compatible), and this
+repository contains no protobuf source — the vendored tree is only a local
+offline FetchContent cache and is not part of the repository.  A Chinese
+version of this README is available at [README.zh-CN.md](README.zh-CN.md).
