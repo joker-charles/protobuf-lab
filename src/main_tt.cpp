@@ -208,6 +208,11 @@ static void self_test()
   rpb::serialize(bytes, p);
   tmm::TestAllTypesProto3 q3;
   check(rpb::parse(bytes, q3) && q3 == p, "oneof bytes roundtrip");
+
+  // Deep copy: full fixture (recursion, oneof unique_ptr alternatives,
+  // maps with move-only message values) copies by value.
+  tmm::TestAllTypesProto3 copy = rpb::deep_copy(p);
+  check(copy == p, "deep_copy of full fixture");
 }
 
 static void emit_fixture()

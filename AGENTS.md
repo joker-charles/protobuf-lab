@@ -216,7 +216,11 @@ reflection-generated getopt table, `#embed` prime tables, contracts, and
   (containers/strings use `==`; variants compare by index and recurse into
   the active alternative, since variant `==` would compare unique_ptr
   alternatives by pointer; everything else is compared member-wise via
-  reflection).
+  reflection).  `rpb::deep_copy` is the symmetric value-copy helper:
+  containers/variants/optionals are rebuilt element-wise and unique_ptr
+  members allocate fresh pointees, so structs with unique_ptr members get
+  protobuf-style deep-copy semantics without hand-written copy
+  constructors (std::vector<bool> copies as-is; bit-proxy elements).
 - Unknown fields: an `rpb::UnknownFields` member (any position, no
   annotation) captures and re-emits them after all known fields; without it
   they are skipped. Groups are skipped, not captured.

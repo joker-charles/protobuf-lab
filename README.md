@@ -16,6 +16,10 @@ protoc-generated code and the official protobuf conformance suite.
 - **Recursive messages** via `std::unique_ptr<T>` members (by-value
   recursion is impossible in C++); singular message fields have real
   proto3 presence.
+- **Deep-copyable messages** via the reflection-driven `rpb::deep_copy`
+  helper: structs with `unique_ptr` members keep protobuf-style value
+  semantics (fresh storage per copy) without hand-written copy
+  constructors.
 - **Compile-time validation**: missing/duplicate field numbers, oneof
   annotation-count or alternative-type violations, and `unique_ptr`
   pointee type errors all fail with `static_assert`.

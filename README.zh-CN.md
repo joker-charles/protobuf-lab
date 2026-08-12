@@ -14,6 +14,8 @@ conformance 套件验证。
   每个替代一个 wire 字段，presence 语义，解析 last-wins。
 - **递归消息**：`std::unique_ptr<T>` 成员（C++ 值语义无法表达自递归）；
   单值消息字段具有真实的 proto3 presence。
+- **可深拷贝消息**：反射驱动的 `rpb::deep_copy`——带 `unique_ptr` 成员的
+  struct 保持 protobuf 风格的值语义（每次拷贝独立存储），无需手写拷贝构造。
 - **编译期校验**：字段号缺失/重复、oneof 注解数或替代类型违规、
   `unique_ptr` 指向非消息类型，全部 `static_assert` 报错。
 - **protobuf merge 语义**：单值消息字段（含 oneof 内）重复出现时合并

@@ -351,6 +351,20 @@ static void test_recursive_oneof_deep_equal()
   check(rpb::parse(bytes, q) && q == a, "recursive oneof roundtrip");
 }
 
+static void test_deep_copy()
+{
+  RecursiveChoice a;
+  a.next = std::make_unique<RecursiveChoice>();
+  std::get<2>(a.next)->next = std::int32_t{42};
+
+  RecursiveChoice b = rpb::deep_copy(a);
+  check(b == a, "deep_copy equal");
+  check(std::get<2>(b.next).get() != std::get<2>(a.next).get(),
+        "deep_copy allocates independent storage");
+  std::get<2>(b.next)->next = std::int32_t{43};
+  check(!(b == a), "deep_copy does not share state");
+}
+
 static void test_roundtrip()
 {
   Person p = make_fixture();
@@ -430,6 +444,7 @@ static void run_tests()
   test_oneof_hand_bytes();
   test_out_of_order();
   test_recursive_oneof_deep_equal();
+  test_deep_copy();
   test_roundtrip();
   test_unknown_field();
   test_group_skip();
