@@ -36,6 +36,7 @@ int main()
   (*p.mutable_scores())["alice"] = 3;
   p.add_unpacked_nums(1);
   p.add_unpacked_nums(2);
+  p.set_count(42);
 
   std::string s;
   if (!p.SerializeToString(&s))

@@ -2,9 +2,12 @@
 
 #include "codec.hpp"
 
+#include <algorithm>
 #include <cstdio>
 #include <cstring>
 #include <cstdlib>
+#include <fstream>
+#include <iterator>
 #include <map>
 #include <optional>
 #include <string>
@@ -19,8 +22,8 @@ enum class Color : std::int32_t
 
 struct Address
 {
-  std::string city;
-  std::int64_t zip;
+  [[=rpb::field_no<1>{}]] std::string city;
+  [[=rpb::field_no<2>{}]] std::int64_t zip;
 
   bool operator==(Address const &o) const
   {
@@ -30,36 +33,40 @@ struct Address
 
 struct Person
 {
-  std::string name;
-  std::int32_t id;
-  std::vector<std::int64_t> lucky;
-  double score;
-  Address home;
-  std::optional<std::string> nick;
-  Color color;
-  std::vector<Color> palette;
-  std::string blob;
-  rpb::SInt<std::int32_t> delta;
-  rpb::SInt<std::int64_t> big;
-  rpb::Fixed32 fx32;
-  rpb::SFixed64 sfx64;
-  std::vector<rpb::SInt<std::int64_t>> samples;
-  std::vector<rpb::Fixed32> hashes;
-  std::vector<bool> flags;
-  std::vector<std::string> tags;
-  std::map<std::string, std::int32_t> scores;
+  rpb::UnknownFields unknown;  // any position now (annotation-driven)
+  [[=rpb::field_no<1>{}]] std::string name;
+  [[=rpb::field_no<2>{}]] std::int32_t id;
+  [[=rpb::field_no<3>{}]] std::vector<std::int64_t> lucky;
+  [[=rpb::field_no<4>{}]] double score;
+  [[=rpb::field_no<5>{}]] Address home;
+  [[=rpb::field_no<6>{}]] std::optional<std::string> nick;
+  [[=rpb::field_no<7>{}]] Color color;
+  [[=rpb::field_no<8>{}]] std::vector<Color> palette;
+  [[=rpb::field_no<9>{}]] std::string blob;
+  [[=rpb::field_no<10>{}]] rpb::SInt<std::int32_t> delta;
+  [[=rpb::field_no<11>{}]] rpb::SInt<std::int64_t> big;
+  [[=rpb::field_no<12>{}]] rpb::Fixed32 fx32;
+  [[=rpb::field_no<13>{}]] rpb::SFixed64 sfx64;
+  [[=rpb::field_no<14>{}]] std::vector<rpb::SInt<std::int64_t>> samples;
+  [[=rpb::field_no<15>{}]] std::vector<rpb::Fixed32> hashes;
+  [[=rpb::field_no<16>{}]] std::vector<bool> flags;
+  [[=rpb::field_no<17>{}]] std::vector<std::string> tags;
+  [[=rpb::field_no<18>{}]] std::map<std::string, std::int32_t> scores;
+  [[=rpb::field_no<19>{}]]
   std::vector<rpb::Unpacked<std::int32_t>> unpacked_nums;
-  rpb::UnknownFields unknown;  // must stay last: captures unknown fields
+  [[=rpb::field_no<20>{}, =rpb::field_no<21>{}]]
+  rpb::OneOf<std::string, std::int64_t> choice;
 
   bool operator==(Person const &o) const
   {
-    return name == o.name && id == o.id && lucky == o.lucky && score == o.score
+    return unknown == o.unknown && name == o.name && id == o.id
+           && lucky == o.lucky && score == o.score
            && home == o.home && nick == o.nick && color == o.color
            && palette == o.palette && blob == o.blob && delta == o.delta
            && big == o.big && fx32 == o.fx32 && sfx64 == o.sfx64
            && samples == o.samples && hashes == o.hashes && flags == o.flags
            && tags == o.tags && scores == o.scores
-           && unpacked_nums == o.unpacked_nums && unknown == o.unknown;
+           && unpacked_nums == o.unpacked_nums && choice == o.choice;
   }
 };
 
@@ -70,6 +77,18 @@ static void check(bool ok, char const *label)
   std::printf("%s: %s\n", ok ? "ok" : "FAIL", label);
   if (!ok)
     ++failures;
+}
+
+// Byte-exact comparison: string (char) vs unsigned-char expected bytes.
+// Comparing the two value types directly would promote 0xFF to -1 vs 255,
+// so both sides are projected to unsigned char first.
+template <std::size_t N>
+bool bytes_match(std::string const &s, unsigned char const (&expected)[N])
+{
+  return std::ranges::equal(
+      s, expected, std::ranges::equal_to{},
+      [](char c) { return static_cast<unsigned char>(c); },
+      [](unsigned char c) { return c; });
 }
 
 static void test_hand_bytes()
@@ -97,8 +116,7 @@ static void test_hand_bytes()
 
   std::string bytes;
   rpb::serialize(bytes, p);
-  check(bytes.size() == sizeof expected
-            && std::memcmp(bytes.data(), expected, sizeof expected) == 0,
+  check(bytes_match(bytes, expected),
         "hand-computed wire bytes");
 
   Person q;
@@ -107,12 +125,12 @@ static void test_hand_bytes()
 
 struct WireBits
 {
-  rpb::SInt<std::int32_t> a;                // 1: sint32
-  rpb::Fixed32 b;                           // 2: fixed32
-  rpb::SFixed64 c;                          // 3: sfixed64
-  std::vector<rpb::SInt<std::int64_t>> d;   // 4: packed sint64
-  Color e;                                  // 5: enum (varint)
-  std::vector<Color> f;                     // 6: packed enum
+  [[=rpb::field_no<1>{}]] rpb::SInt<std::int32_t> a;             // 1: sint32
+  [[=rpb::field_no<2>{}]] rpb::Fixed32 b;                        // 2: fixed32
+  [[=rpb::field_no<3>{}]] rpb::SFixed64 c;                       // 3: sfixed64
+  [[=rpb::field_no<4>{}]] std::vector<rpb::SInt<std::int64_t>> d;  // 4: packed
+  [[=rpb::field_no<5>{}]] Color e;                               // 5: enum
+  [[=rpb::field_no<6>{}]] std::vector<Color> f;                  // 6: packed
 
   bool operator==(WireBits const &) const = default;
 };
@@ -144,8 +162,7 @@ static void test_hand_wire_types()
 
   std::string bytes;
   rpb::serialize(bytes, w);
-  check(bytes.size() == sizeof expected
-            && std::memcmp(bytes.data(), expected, sizeof expected) == 0,
+  check(bytes_match(bytes, expected),
         "hand-computed wire-type bytes");
 
   WireBits r;
@@ -154,8 +171,8 @@ static void test_hand_wire_types()
 
 struct MapBits
 {
-  std::map<std::string, std::int32_t> m;   // 1: map<string,int32>
-  std::vector<rpb::Unpacked<std::int32_t>> u;  // 2: repeated int32 unpacked
+  [[=rpb::field_no<1>{}]] std::map<std::string, std::int32_t> m;
+  [[=rpb::field_no<2>{}]] std::vector<rpb::Unpacked<std::int32_t>> u;
 
   bool operator==(MapBits const &) const = default;
 };
@@ -179,8 +196,7 @@ static void test_hand_map_unpacked()
 
   std::string bytes;
   rpb::serialize(bytes, w);
-  check(bytes.size() == sizeof expected
-            && std::memcmp(bytes.data(), expected, sizeof expected) == 0,
+  check(bytes_match(bytes, expected),
         "hand-computed map/unpacked bytes");
 
   MapBits r;
@@ -213,7 +229,91 @@ static Person make_fixture()
   p.scores = {{"alice", 3}};
   p.unpacked_nums = {rpb::Unpacked<std::int32_t>{1},
                      rpb::Unpacked<std::int32_t>{2}};
+  p.choice = std::int64_t{42};  // oneof: count = 42
   return p;
+}
+
+struct OneOfBits
+{
+  [[=rpb::field_no<20>{}, =rpb::field_no<21>{}]]
+  rpb::OneOf<std::string, std::int64_t> choice;
+
+  bool operator==(OneOfBits const &) const = default;
+};
+
+static void test_oneof_hand_bytes()
+{
+  // 20: note (string), 21: count (int64)
+  //   note="hi"      A2 01 02 68 69
+  //   count=42       A8 01 2A
+  //   unset          (nothing emitted)
+  //   note=""        A2 01 00  (presence: set, even default, still emits)
+  static unsigned char const note_expected[] = {0xA2, 0x01, 0x02, 'h', 'i'};
+  static unsigned char const count_expected[] = {0xA8, 0x01, 0x2A};
+  static unsigned char const empty_expected[] = {0xA2, 0x01, 0x00};
+
+  OneOfBits w;
+  std::string bytes;
+  rpb::serialize(bytes, w);
+  check(bytes.empty(), "oneof unset emits nothing");
+
+  w.choice = std::string("hi");
+  bytes.clear();
+  rpb::serialize(bytes, w);
+  check(bytes_match(bytes, note_expected),
+        "oneof string alternative hand bytes");
+  OneOfBits r;
+  check(rpb::parse(bytes, r) && r == w, "oneof string alternative parse");
+
+  w.choice = std::int64_t{42};
+  bytes.clear();
+  rpb::serialize(bytes, w);
+  check(bytes_match(bytes, count_expected),
+        "oneof int64 alternative hand bytes");
+  check(rpb::parse(bytes, r) && r == w, "oneof int64 alternative parse");
+
+  w.choice = std::string("");
+  bytes.clear();
+  rpb::serialize(bytes, w);
+  check(bytes_match(bytes, empty_expected),
+        "oneof empty string still emitted");
+  check(rpb::parse(bytes, r) && r == w,
+        "oneof empty string roundtrip");
+
+  // Last-wins: both alternatives on the wire -> the later one wins.
+  static unsigned char const both_expected[] = {
+      0xA2, 0x01, 0x02, 'h', 'i', 0xA8, 0x01, 0x2A};
+  OneOfBits lw;
+  check(rpb::parse(
+            std::string(reinterpret_cast<char const *>(both_expected),
+                        sizeof both_expected),
+            lw)
+            && lw.choice.index() == 2 && std::get<2>(lw.choice) == 42,
+        "oneof last-wins");
+}
+
+struct OutOfOrder
+{
+  [[=rpb::field_no<2>{}]] std::int32_t b;  // declared second, field 2
+  [[=rpb::field_no<1>{}]] std::int32_t a;  // declared first, field 1
+
+  bool operator==(OutOfOrder const &) const = default;
+};
+
+static void test_out_of_order()
+{
+  // Members declared 2 then 1; the compile-time table must sort them to
+  // 1 then 2 on the wire (protoc always emits ascending field numbers).
+  OutOfOrder w;
+  w.a = 42;
+  w.b = 7;
+  std::string bytes;
+  rpb::serialize(bytes, w);
+  static unsigned char const expected[] = {0x08, 0x2A, 0x10, 0x07};
+  check(bytes_match(bytes, expected),
+        "out-of-order declaration serialized ascending");
+  OutOfOrder r;
+  check(rpb::parse(bytes, r) && r == w, "out-of-order roundtrip");
 }
 
 static void test_roundtrip()
@@ -282,6 +382,8 @@ static void run_tests()
   test_hand_bytes();
   test_hand_wire_types();
   test_hand_map_unpacked();
+  test_oneof_hand_bytes();
+  test_out_of_order();
   test_roundtrip();
   test_unknown_field();
   test_group_skip();
@@ -298,18 +400,14 @@ static void emit_fixture()
 
 static void parse_file(char const *path)
 {
-  std::FILE *f = std::fopen(path, "rb");
+  std::ifstream f(path, std::ios::binary);
   if (!f)
     {
       std::fprintf(stderr, "cannot open %s\n", path);
       std::exit(2);
     }
-  std::string data;
-  char buf[4096];
-  std::size_t n;
-  while ((n = std::fread(buf, 1, sizeof buf, f)) > 0)
-    data.append(buf, n);
-  std::fclose(f);
+  std::string data((std::istreambuf_iterator<char>(f)),
+                   std::istreambuf_iterator<char>());
 
   Person p;
   if (!rpb::parse(data, p) || !(p == make_fixture()))

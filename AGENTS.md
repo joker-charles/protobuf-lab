@@ -15,7 +15,8 @@ facts from web searches.
 ## Toolchain (critical)
 
 - Reflection / contracts / `#embed` are **C++26 only** and need
-  **`g++-16`** (`/usr/bin/g++-16`, 16.0.1 20260322 experimental).
+  **`g++-16`** (`/usr/bin/g++-16`, 16.1.0-2ubuntu1, installed from the
+  stonking/26.10 archive).
   The system default `g++` is 15 and **rejects `-freflection`**.
 - Build with: `cmake -S reflect-proto -B reflect-proto/build
   -DCMAKE_CXX_COMPILER=g++-16 -DCMAKE_BUILD_TYPE=Release`
@@ -55,6 +56,10 @@ facts from web searches.
 
 - `for_each`, `name_of` (use `identifier_of`).
 - `extract<int>` on an **enumerator** throws "value cannot be extracted".
+- `typename [: expr :]::` in an **evaluated expression** (e.g. `return
+  typename [: type_of(r) :]::nested::value;`) is a **parse error**
+  (`expected '(' before ';'`, 16.0.1 and 16.1.0). Use the scope-splice form
+  or move to a type context (see "Patterns that DO work").
 - Splices on **regular range-for** loop variables fail ("consteval-only
   variable '__for_range' not declared 'constexpr'"). `template for` loop
   variables are fine (see below).
@@ -71,6 +76,18 @@ facts from web searches.
   meta::access_context::unprivileged())[I];`
 - Member type + access:
   `using M = typename [: meta::type_of(r) :];` then `v.[:r:]`.
+- **Scope splice for static data members** (no `typename`, expression
+  context, inline OK): `[: meta::type_of(ann) :]::value` (verified 2026-08,
+  16.1.0). `typename [:R:]::value` is the wrong spelling for a non-type
+  member - `typename` is only for nested *types*.
+- **Type splices in type contexts** work inline even with function calls:
+  `using U = typename [: expr :]::nested;` (or `using U = [: expr :]::nested;`
+  in type-only contexts), `typename template [:^^TCls:]<3>::type`,
+  `__is_same(typename [: expr :]::nested, ...)`.
+- `annotations_of` / `annotations_of_with_type` only read annotations on
+  **members and enumerators** - querying a *type* returns an empty vector
+  (subscripting it then trips the libstdc++ hardening assert). Always go
+  through `nonstatic_data_members_of(^^T, ctx)[I]` first.
 - Value splice: bind to a local first, then convert:
   `auto e = [: r :];` / `int x = static_cast<int>(e);`. Direct casts of a
   **bound constexpr info** also work: `static_cast<int>([:r:])`,
@@ -160,8 +177,17 @@ reflection-generated getopt table, `#embed` prime tables, contracts, and
 
 ## Codec design conventions (reflect-proto)
 
-- Field number = member position + 1; adding, removing or reordering members
-  changes the wire format.
+- Field numbers are explicit (P3394R4 annotations): every member except
+  `UnknownFields` carries `[[=rpb::field_no<N>{}]]`; ordinary members exactly
+  one, `OneOf` members one per alternative (annotation order ↔ std::variant
+  alternative order).  The number rides on the annotation type and is read
+  with a scope splice (`[: type_of(ann) :]::value`) -- no
+  `std::meta::extract`.  Known fields serialize in ascending field-number
+  order (compile-time table, consteval `std::sort`); declaration order is
+  irrelevant.  Validated at compile time: missing annotation, duplicate or
+  zero field numbers, `OneOf` annotation-count mismatch, `unique_ptr`
+  pointee not a message type, and vector/map/optional/oneof/`UnknownFields`
+  alternatives all `static_assert`.
 - Type mapping: string/bytes -> LEN; integral/enum -> varint (sign-extended);
   `SInt<T>` -> zigzag varint; `Fixed32/SFixed32` -> 4-byte LE;
   `Fixed64/SFixed64` -> 8-byte LE; float/double -> 4/8-byte LE; packable
@@ -170,12 +196,34 @@ reflection-generated getopt table, `#embed` prime tables, contracts, and
   `std::map<K,V>` -> repeated map-entry messages (key=1/value=2, serialized
   in `std::map` sorted order; protobuf map order is unspecified, so
   byte-level interop uses single-entry maps); `optional<T>` -> presence;
-  nested struct -> embedded message.
+  `OneOf<Ts...>` (`std::variant<std::monostate, Ts...>`) -> oneof, one wire
+  field per alternative, presence semantics (set -> emit, even defaults),
+  last-wins on parse; `std::unique_ptr<T>` -> singular message with real
+  presence (null omitted; breaks by-value recursion cycles, e.g.
+  `TestAllTypesProto3.recursive_message`); nested struct -> embedded
+  message.
 - proto3 semantics: default-valued scalar/string/enum members and empty
-  packed vectors are omitted; nested messages and optionals-with-value always
-  serialize; empty repeated string elements still emit.
-- Unknown fields: a trailing `rpb::UnknownFields` member captures and re-emits
-  them (it must stay last so it does not shift field numbers); without it they
-  are skipped. Groups are skipped, not captured.
+  packed vectors are omitted; nested messages serialize unless all their
+  members are default/absent (value semantics cannot distinguish unset from
+  present-but-empty); optionals-with-value and non-null `unique_ptr` always
+  serialize; empty repeated string elements still emit.  `rpb::deep_equal`
+  compares messages with unique_ptr members by dereferencing recursively
+  (containers/strings/variants use `==`, everything else is compared
+  member-wise via reflection).
+- Unknown fields: an `rpb::UnknownFields` member (any position, no
+  annotation) captures and re-emits them after all known fields; without it
+  they are skipped. Groups are skipped, not captured.
+- Official-schema differential tests: `interop_tt` byte-compares our codec
+  against protoc-generated code on protobuf's own
+  `test_messages_proto3.proto` `TestAllTypesProto3` (mirror in
+  `reflect-proto/src/test_messages.hpp`). Recursive fields
+  (`NestedMessage.corecursive`, `recursive_message`) are covered through
+  `std::unique_ptr`. Known unrepresentable bits, omitted from the mirror
+  and left unset in the shared fixture: `oneof_string` (bytes == string
+  collides in `std::variant`), Struct/Value/ListValue (mutually
+  recursive), and sint/fixed **map keys** (60-65: zigzag/fixed key
+  encoding needs wrapper key types that `std::map` cannot order).
+  `ctype=STRING_PIECE/CORD` fields have private accessors in generated
+  3.21 code; `ref_main_tt` sets them via `TextFormat::MergeFromString`.
 - libprotobuf is linked only for wire primitives (`CodedInputStream`/
   `CodedOutputStream`); there is no descriptor/reflection runtime by design.

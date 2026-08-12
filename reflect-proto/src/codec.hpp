@@ -1,11 +1,16 @@
-// Protobuf wire-format codec driven by C++26 static reflection (P2996).
+// Protobuf wire-format codec driven by C++26 static reflection (P2996 +
+// P3394R4 value annotations).
 //
 // Wire primitives come from protobuf's own
 // google/protobuf/io/coded_stream.{h,cc} (linked from libprotobuf); the
-// reflection decides which members are which fields.  Field number =
-// member position + 1 (v1 convention).
+// reflection decides which members are which fields.  Field numbers are
+// explicit: every member (except UnknownFields) carries one or more
+// [[=rpb::field_no<N>{}]] annotations (P3394R4).  Ordinary members carry
+// exactly one; OneOf members carry one per alternative, in std::variant
+// order.  Known fields serialize in ascending field-number order
+// (compile-time sorted); UnknownFields re-emit after all known fields.
 //
-// Type mapping (v2):
+// Type mapping (v3):
 //   std::string                      -> wire type 2 (length-delimited)
 //   integral / enum                  -> wire type 0 (varint, sign-extended)
 //   SInt<T> (sint32/sint64)          -> wire type 0 (zigzag)
@@ -17,25 +22,37 @@
 //   std::vector<Unpacked<T>>         -> repeated unpacked (tag per element)
 //   std::map<K,V>                    -> repeated map-entry messages (k=1,v=2)
 //   std::optional<T>                 -> optional field (skipped when empty)
+//   std::unique_ptr<T>               -> singular message (presence; null
+//                                        omitted, breaks recursion cycles)
+//   OneOf<Ts...>                     -> oneof: one field per alternative
+//                                        (presence semantics; default
+//                                        values still serialize)
 //   nested struct                    -> embedded message, wire type 2
-//   UnknownFields (trailing member)  -> unknown-field preservation
+//   UnknownFields (any position)     -> unknown-field preservation
 //
 // proto3 default omission: scalar / string / bytes / enum members equal to
 // their default (and empty packed vectors) are not serialized. Nested
-// messages and optionals-with-value are always serialized. Repeated
-// length-delimited elements are never omitted, even when empty.
+// messages serialize unless all their members are default/absent (value
+// semantics cannot distinguish unset from present-but-empty; optional and
+// unique_ptr keep real presence). Repeated length-delimited elements are
+// never omitted, even when empty. Oneof alternatives serialize whenever
+// they are set, even at default values.
 
 #pragma once
 
 #include <meta>
 
+#include <algorithm>
+#include <array>
 #include <bit>
 #include <cstdint>
 #include <map>
+#include <memory>
 #include <optional>
 #include <string>
 #include <type_traits>
 #include <utility>
+#include <variant>
 #include <vector>
 
 #include <google/protobuf/io/coded_stream.h>
@@ -57,6 +74,71 @@ template <typename T, std::size_t I>
 inline constexpr meta::info member_v =
     meta::nonstatic_data_members_of(^^T, members_ctx())[I];
 
+// --- field-number annotations (P3394R4) --------------------------------
+// [[=rpb::field_no<N>{}]] declares the wire field number of a member.
+// The number rides on the annotation TYPE (static constexpr `value`), so
+// it is read back with a scope splice ([: type_of(ann) :]::value) -- no
+// std::meta::extract involved.  OneOf members carry one annotation per
+// alternative, in declaration order.
+
+template <std::uint32_t N>
+struct field_no
+{
+  static constexpr std::uint32_t value = N;
+};
+
+template <typename T> struct is_field_no : std::false_type {};
+template <std::uint32_t N> struct is_field_no<field_no<N>> : std::true_type {};
+template <typename T> inline constexpr bool is_field_no_v =
+    is_field_no<T>::value;
+
+// --- oneof -------------------------------------------------------------
+// OneOf<Ts...> = std::variant<std::monostate, Ts...>; monostate means the
+// oneof is unset.  Each alternative is a distinct protobuf field with its
+// own field_no annotation.
+
+template <typename... Ts>
+using OneOf = std::variant<std::monostate, Ts...>;
+
+template <typename T> struct is_one_of : std::false_type {};
+template <typename... Ts> struct is_one_of<OneOf<Ts...>> : std::true_type {};
+template <typename T> inline constexpr bool is_one_of_v = is_one_of<T>::value;
+
+// --- annotation reflection helpers (NTTP only; a function parameter is
+// not a constant expression) ---
+
+template <meta::info M>
+consteval std::size_t annotation_count()
+{
+  std::size_t n = 0;
+  template for (constexpr auto ann :
+                std::define_static_array(meta::annotations_of(M)))
+    {
+      using A = std::remove_cvref_t<typename [: meta::type_of(ann) :]>;
+      if (is_field_no_v<A>)
+        ++n;
+    }
+  return n;
+}
+
+template <meta::info M, std::size_t K>
+consteval std::uint32_t field_number()
+{
+  std::size_t seen = 0;
+  template for (constexpr auto ann :
+                std::define_static_array(meta::annotations_of(M)))
+    {
+      using A = std::remove_cvref_t<typename [: meta::type_of(ann) :]>;
+      if constexpr (is_field_no_v<A>)
+        {
+          if (seen == K)
+            return [: meta::type_of(ann) :]::value;
+          ++seen;
+        }
+    }
+  return 0;  // not found (unreachable for valid layouts)
+}
+
 // --- type traits ---
 
 template <typename T> struct is_vector : std::false_type {};
@@ -68,6 +150,12 @@ template <typename T> struct is_optional : std::false_type {};
 template <typename T> struct is_optional<std::optional<T>> : std::true_type {};
 template <typename T> inline constexpr bool is_optional_v =
     is_optional<T>::value;
+
+template <typename T> struct is_unique_ptr : std::false_type {};
+template <typename T, typename D>
+struct is_unique_ptr<std::unique_ptr<T, D>> : std::true_type {};
+template <typename T> inline constexpr bool is_unique_ptr_v =
+    is_unique_ptr<T>::value;
 
 template <typename T> struct is_map : std::false_type {};
 template <typename K, typename V, typename C, typename A>
@@ -90,6 +178,17 @@ template <typename T> struct underlying_or_self<T, true>
 };
 template <typename T> using underlying_or_self_t =
     typename underlying_or_self<T>::type;
+
+// Value counterpart of underlying_or_self_t: enums -> their underlying
+// value (std::to_underlying), everything else unchanged.
+template <typename T>
+constexpr auto underlying_value(T v)
+{
+  if constexpr (std::is_enum_v<T>)
+    return std::to_underlying(v);
+  else
+    return v;
+}
 
 // --- explicit wire-type wrappers (protobuf wire types not expressible by a
 // plain C++ type: sint zigzag and fixed-width integers) ---
@@ -154,11 +253,12 @@ template <typename T>
 inline constexpr bool is_packable_v = is_numeric_v<T> || is_wire_wrapper_v<T>;
 
 // --- unknown-field preservation -----------------------------------------
-// A struct may carry a trailing member of type UnknownFields; fields the
-// codec does not recognize are captured there and re-emitted verbatim on
-// serialization (mirroring protobuf's UnknownFieldSet). Without the member,
-// unknown fields are skipped as before. Put the member last so it does not
-// shift the field numbers of the real fields.
+// A struct may carry a member of type UnknownFields; fields the codec does
+// not recognize are captured there and re-emitted verbatim after the known
+// fields on serialization (mirroring protobuf's UnknownFieldSet). Without
+// the member, unknown fields are skipped as before. Field numbers are
+// annotation-driven, so this member may sit at any position -- it just
+// must carry no field_no annotation of its own.
 
 struct UnknownField
 {
@@ -197,14 +297,24 @@ inline constexpr bool is_omittable_v =
     || std::is_same_v<M, std::string> || is_wire_wrapper_v<M>
     || is_vector_v<M> || is_map_v<M>;
 
+// A by-value member that is neither a scalar/container nor a
+// presence-bearing type (optional/unique_ptr/oneof) is a plain nested
+// message.  Value semantics cannot distinguish "unset" from "set to an
+// empty message", so plain nested messages are omitted when all their
+// members are default/absent (matching protobuf for the unset case).
+template <typename M>
+inline constexpr bool is_plain_message_v =
+    !std::is_arithmetic_v<M> && !std::is_enum_v<M>
+    && !std::is_same_v<M, std::string> && !is_vector_v<M> && !is_map_v<M>
+    && !is_optional_v<M> && !is_unique_ptr_v<M> && !is_one_of_v<M>
+    && !is_wire_wrapper_v<M> && !is_unpacked_wrapper_v<M>
+    && !std::is_same_v<M, UnknownField> && !std::is_same_v<M, UnknownFields>;
+
 template <typename M>
 bool is_default_value(M const &v)
 {
   if constexpr (std::is_integral_v<M> || std::is_enum_v<M>)
-    {
-      using R = underlying_or_self_t<M>;
-      return static_cast<R>(v) == R{};
-    }
+    return underlying_value(v) == underlying_value(M{});
   else if constexpr (std::is_floating_point_v<M>)
     return v == 0.0;
   else if constexpr (std::is_same_v<M, std::string>)
@@ -217,7 +327,41 @@ bool is_default_value(M const &v)
     return v.empty();  // vectors: empty repeated fields are omitted
 }
 
+template <typename T> bool is_empty_message(T const &v);
+
+template <typename M>
+bool member_is_default_or_absent(M const &v)
+{
+  if constexpr (is_omittable_v<M>)
+    return is_default_value(v);
+  else if constexpr (is_optional_v<M>)
+    return !v.has_value();
+  else if constexpr (is_unique_ptr_v<M>)
+    return !v;
+  else if constexpr (is_one_of_v<M>)
+    return v.index() == 0;  // monostate: unset
+  else
+    return is_empty_message(v);  // plain nested message
+}
+
+template <typename T>
+bool is_empty_message(T const &v)
+{
+  bool empty = true;
+  template for (constexpr auto m :
+                std::define_static_array(
+                    meta::nonstatic_data_members_of(^^T, members_ctx())))
+    {
+      if (!member_is_default_or_absent(v.[:m:]))
+        empty = false;
+    }
+  return empty;
+}
+
 // --- zigzag (sint32/sint64) helpers, matching protobuf's encoding ---
+// Kept hand-rolled on purpose: protobuf's WireFormatLite::ZigZagEncode* is
+// in the google::protobuf::internal namespace, and we avoid internal::
+// dependencies.
 
 constexpr std::uint32_t zigzag32(std::int32_t n)
 {
@@ -236,6 +380,207 @@ constexpr std::int32_t unzigzag32(std::uint32_t u)
 constexpr std::int64_t unzigzag64(std::uint64_t u)
 {
   return static_cast<std::int64_t>((u >> 1) ^ (0ull - (u & 1)));
+}
+
+// --- compile-time field table ------------------------------------------
+// One FieldEntry per wire field: ordinary members contribute one entry
+// (alt == 0), OneOf members one entry per alternative (alt == the
+// std::variant index 1..N).  The table is sorted ascending by field number
+// (std::sort, consteval) so serialization always matches protoc's
+// field-number order regardless of declaration order.
+
+struct FieldEntry
+{
+  std::uint32_t fieldno;
+  std::size_t member;  // index into nonstatic_data_members_of
+  std::size_t alt;     // 0 = ordinary member, else variant index
+};
+
+template <typename T, std::size_t... Is>
+consteval std::size_t field_table_size_impl(std::index_sequence<Is...>)
+{
+  return (annotation_count<member_v<T, Is>>() + ...);
+}
+
+template <typename T>
+inline constexpr std::size_t field_table_size_v =
+    field_table_size_impl<T>(std::make_index_sequence<member_count_v<T>>{});
+
+template <typename T, std::size_t I, std::size_t... Ks>
+consteval void append_oneof_entries(
+    std::array<FieldEntry, field_table_size_v<T>> &table, std::size_t &n,
+    std::index_sequence<Ks...>)
+{
+  constexpr meta::info r = member_v<T, I>;
+  ((table[n++] = FieldEntry{field_number<r, Ks>(), I, Ks + 1}), ...);
+}
+
+template <typename T, std::size_t I>
+consteval void append_member_entry(
+    std::array<FieldEntry, field_table_size_v<T>> &table, std::size_t &n)
+{
+  constexpr meta::info r = member_v<T, I>;
+  using M = typename [: meta::type_of(r) :];
+  if constexpr (is_one_of_v<M>)
+    append_oneof_entries<T, I>(
+        table, n, std::make_index_sequence<std::variant_size_v<M> - 1>{});
+  else
+    table[n++] = FieldEntry{field_number<r, 0>(), I, 0};
+}
+
+template <typename T, std::size_t I>
+consteval void append_known_member_entry(
+    std::array<FieldEntry, field_table_size_v<T>> &table, std::size_t &n)
+{
+  if constexpr (annotation_count<member_v<T, I>>() != 0)
+    append_member_entry<T, I>(table, n);
+}
+
+template <typename T, std::size_t... Is>
+consteval std::array<FieldEntry, field_table_size_v<T>>
+build_field_table(std::index_sequence<Is...>)
+{
+  std::array<FieldEntry, field_table_size_v<T>> table{};
+  std::size_t n = 0;
+  (append_known_member_entry<T, Is>(table, n), ...);
+  std::sort(table.begin(), table.begin() + static_cast<std::ptrdiff_t>(n),
+            [](FieldEntry const &a, FieldEntry const &b) {
+              return a.fieldno < b.fieldno;
+            });
+  return table;
+}
+
+template <typename T>
+consteval auto field_table()
+{
+  return build_field_table<T>(
+      std::make_index_sequence<member_count_v<T>>{});
+}
+
+// --- layout validation -------------------------------------------------
+// Compile-time rules: every non-UnknownFields member needs exactly one
+// field_no annotation (OneOf: one per alternative); UnknownFields must
+// carry none; OneOf alternatives must be single-value types; field
+// numbers must be >= 1 and unique within a message.
+
+template <meta::info M>
+consteval bool member_annotation_count_ok()
+{
+  using MT = typename [: meta::type_of(M) :];
+  if constexpr (std::is_same_v<MT, UnknownFields>)
+    return annotation_count<M>() == 0;
+  else if constexpr (is_one_of_v<MT>)
+    return annotation_count<M>() == std::variant_size_v<MT> - 1;
+  else
+    return annotation_count<M>() == 1;
+}
+
+template <typename T, std::size_t... Is>
+consteval bool layout_annotations_ok_impl(std::index_sequence<Is...>)
+{
+  return (member_annotation_count_ok<member_v<T, Is>>() && ...);
+}
+
+template <typename T>
+inline constexpr bool layout_annotations_ok_v =
+    layout_annotations_ok_impl<T>(
+        std::make_index_sequence<member_count_v<T>>{});
+
+template <typename Alt>
+inline constexpr bool bad_oneof_alt_v =
+    is_vector_v<Alt> || is_map_v<Alt> || is_optional_v<Alt>
+    || is_one_of_v<Alt> || std::is_same_v<Alt, UnknownFields>;
+
+template <typename T, std::size_t I, std::size_t... Ks>
+consteval bool oneof_alts_ok_impl(std::index_sequence<Ks...>)
+{
+  constexpr meta::info r = member_v<T, I>;
+  using MT = typename [: meta::type_of(r) :];
+  return ((!bad_oneof_alt_v<std::variant_alternative_t<Ks + 1, MT>>) && ...);
+}
+
+template <typename T, std::size_t I>
+consteval bool member_oneof_alts_ok()
+{
+  constexpr meta::info r = member_v<T, I>;
+  using MT = typename [: meta::type_of(r) :];
+  if constexpr (is_one_of_v<MT>)
+    return oneof_alts_ok_impl<T, I>(
+        std::make_index_sequence<std::variant_size_v<MT> - 1>{});
+  else
+    return true;
+}
+
+template <typename T, std::size_t... Is>
+consteval bool layout_alts_ok_impl(std::index_sequence<Is...>)
+{
+  return (member_oneof_alts_ok<T, Is>() && ...);
+}
+
+template <typename T>
+inline constexpr bool layout_alts_ok_v =
+    layout_alts_ok_impl<T>(std::make_index_sequence<member_count_v<T>>{});
+
+template <typename T>
+inline constexpr bool bad_ptr_pointee_v =
+    !std::is_class_v<T> || std::is_same_v<T, std::string>
+    || is_vector_v<T> || is_map_v<T> || is_optional_v<T> || is_one_of_v<T>
+    || is_wire_wrapper_v<T> || is_unpacked_wrapper_v<T>
+    || std::is_same_v<T, UnknownField> || std::is_same_v<T, UnknownFields>;
+
+template <typename T, std::size_t I>
+consteval bool member_ptr_ok()
+{
+  constexpr meta::info r = member_v<T, I>;
+  using M = typename [: meta::type_of(r) :];
+  if constexpr (is_unique_ptr_v<M>)
+    return !bad_ptr_pointee_v<typename M::element_type>;
+  else
+    return true;
+}
+
+template <typename T, std::size_t... Is>
+consteval bool layout_ptrs_ok_impl(std::index_sequence<Is...>)
+{
+  return (member_ptr_ok<T, Is>() && ...);
+}
+
+template <typename T>
+inline constexpr bool layout_ptrs_ok_v =
+    layout_ptrs_ok_impl<T>(std::make_index_sequence<member_count_v<T>>{});
+
+template <typename T>
+consteval bool layout_numbers_ok()
+{
+  constexpr auto table = field_table<T>();
+  for (std::size_t i = 0; i < table.size(); ++i)
+    {
+      if (table[i].fieldno == 0)
+        return false;
+      if (i > 0 && table[i - 1].fieldno == table[i].fieldno)
+        return false;
+    }
+  return true;
+}
+
+template <typename T>
+consteval void check_layout()
+{
+  static_assert(layout_annotations_ok_v<T>,
+                "rpb: every non-UnknownFields member needs exactly one "
+                "[[=rpb::field_no<N>{}]] annotation (OneOf: one per "
+                "alternative); UnknownFields must carry none");
+  static_assert(layout_alts_ok_v<T>,
+                "rpb: OneOf alternatives must be single-value types "
+                "(scalar/enum/string/wrapper/nested message), not "
+                "vector/map/optional/oneof/UnknownFields");
+  static_assert(layout_ptrs_ok_v<T>,
+                "rpb: std::unique_ptr members must point to message types "
+                "(not string/vector/map/optional/oneof/wrappers/"
+                "UnknownFields)");
+  static_assert(layout_numbers_ok<T>(),
+                "rpb: field numbers must be >= 1 and unique within a "
+                "message");
 }
 
 // --- serialization ---
@@ -272,12 +617,11 @@ void write_packed_element(google::protobuf::io::CodedOutputStream &cos,
     cos.WriteLittleEndian64(std::bit_cast<std::uint64_t>(e.value));
   else
     {
-      using R = underlying_or_self_t<U>;
-      if constexpr (std::is_signed_v<R>)
+      if constexpr (std::is_signed_v<underlying_or_self_t<U>>)
         cos.WriteVarint64(static_cast<std::uint64_t>(
-            static_cast<std::int64_t>(static_cast<R>(e))));
+            static_cast<std::int64_t>(underlying_value(e))));
       else
-        cos.WriteVarint64(static_cast<std::uint64_t>(static_cast<R>(e)));
+        cos.WriteVarint64(static_cast<std::uint64_t>(underlying_value(e)));
     }
 }
 
@@ -314,9 +658,9 @@ void serialize_value(google::protobuf::io::CodedOutputStream &cos,
         cos.WriteVarint64(val ? 1 : 0);
       else if constexpr (std::is_signed_v<R>)
         cos.WriteVarint64(static_cast<std::uint64_t>(
-            static_cast<std::int64_t>(static_cast<R>(val))));
+            static_cast<std::int64_t>(underlying_value(val))));
       else
-        cos.WriteVarint64(static_cast<std::uint64_t>(static_cast<R>(val)));
+        cos.WriteVarint64(static_cast<std::uint64_t>(underlying_value(val)));
     }
   else if constexpr (is_sint_wrapper_v<M>)
     {
@@ -399,42 +743,81 @@ void serialize_value(google::protobuf::io::CodedOutputStream &cos,
       if (val.has_value())
         serialize_value(cos, fieldno, *val);
     }
-  else
+  else if constexpr (is_unique_ptr_v<M>)
     {
+      // Singular message behind a pointer: presence semantics, null ->
+      // omitted, non-null -> embedded message (even if empty).
+      if (!val)
+        return;
       std::string payload;
-      serialize(payload, val);
+      serialize(payload, *val);
       cos.WriteTag((fieldno << 3) | 2);
       cos.WriteVarint32(static_cast<std::uint32_t>(payload.size()));
       cos.WriteRaw(payload.data(), static_cast<int>(payload.size()));
     }
-}
-
-template <typename T, std::size_t I>
-void serialize_member(google::protobuf::io::CodedOutputStream &cos, T const &v)
-{
-  constexpr meta::info r = member_v<T, I>;
-  using M = typename [: meta::type_of(r) :];
-  if constexpr (is_omittable_v<M>)
+  else
     {
-      if (is_default_value(v.[:r:]))
-        return;
+      if constexpr (std::is_same_v<M, UnknownField>)
+        return;  // internal single-entry type is never a wire message
+      else
+        {
+          std::string payload;
+          serialize(payload, val);
+          cos.WriteTag((fieldno << 3) | 2);
+          cos.WriteVarint32(static_cast<std::uint32_t>(payload.size()));
+          cos.WriteRaw(payload.data(), static_cast<int>(payload.size()));
+        }
     }
-  serialize_value(cos, static_cast<std::uint32_t>(I + 1), v.[:r:]);
 }
 
-template <typename T, std::size_t... Is>
-void serialize_members(google::protobuf::io::CodedOutputStream &cos, T const &v,
-                       std::index_sequence<Is...>)
+template <typename T, std::uint32_t FNO, std::size_t MI, std::size_t AI>
+void serialize_entry(google::protobuf::io::CodedOutputStream &cos, T const &v)
 {
-  (serialize_member<T, Is>(cos, v), ...);
+  constexpr meta::info r = member_v<T, MI>;
+  using M = typename [: meta::type_of(r) :];
+  if constexpr (AI == 0)
+    {
+      // Ordinary member: proto3 default omission.
+      if constexpr (is_omittable_v<M>)
+        {
+          if (is_default_value(v.[:r:]))
+            return;
+        }
+      else if constexpr (is_plain_message_v<M>)
+        {
+          // Value semantics: an all-default nested struct behaves like an
+          // unset message and is omitted (present-but-empty is not
+          // representable).  optional/unique_ptr keep real presence.
+          if (is_empty_message(v.[:r:]))
+            return;
+        }
+      serialize_value(cos, FNO, v.[:r:]);
+    }
+  else
+    {
+      // OneOf alternative: presence semantics (set -> emit, even defaults).
+      if (v.[:r:].index() != AI)
+        return;
+      serialize_value(cos, FNO, std::get<AI>(v.[:r:]));
+    }
 }
 
 template <typename T>
 void serialize(std::string &out, T const &v)
 {
+  check_layout<T>();
   google::protobuf::io::StringOutputStream sos(&out);
   google::protobuf::io::CodedOutputStream cos(&sos);
-  serialize_members<T>(cos, v, std::make_index_sequence<member_count_v<T>>{});
+  template for (constexpr auto e : std::define_static_array(field_table<T>()))
+    {
+      serialize_entry<T, e.fieldno, e.member, e.alt>(cos, v);
+    }
+  if constexpr (has_unknown_fields_v<T>)
+    {
+      // Unknown fields re-emit after all known fields (protobuf behavior).
+      serialize_value(cos, 0,
+                      v.[: member_v<T, unknown_member_index_v<T>> :]);
+    }
 }
 
 // --- parsing ---
@@ -514,6 +897,19 @@ bool read_packed_element(google::protobuf::io::CodedInputStream &cis, U &out)
 
 inline bool skip_field(google::protobuf::io::CodedInputStream &cis,
                        std::uint32_t fieldno, std::uint32_t wt);
+
+// Reads a length-delimited payload (wire type 2) into `payload`.
+bool read_message_payload(google::protobuf::io::CodedInputStream &cis,
+                          std::uint32_t wt, std::string &payload)
+{
+  if (wt != 2)
+    return false;
+  std::uint32_t len;
+  if (!cis.ReadVarint32(&len))
+    return false;
+  payload.assign(static_cast<std::size_t>(len), '\0');
+  return cis.ReadRaw(payload.data(), static_cast<int>(len));
+}
 
 template <typename M>
 bool parse_value(google::protobuf::io::CodedInputStream &cis, std::uint32_t wt,
@@ -708,20 +1104,57 @@ bool parse_value(google::protobuf::io::CodedInputStream &cis, std::uint32_t wt,
       val = std::move(inner);
       return true;
     }
+  else if constexpr (is_unique_ptr_v<M>)
+    {
+      // Singular message behind a pointer: allocate on hit.
+      std::string payload;
+      if (!read_message_payload(cis, wt, payload))
+        return false;
+      val = std::make_unique<typename M::element_type>();
+      return parse(payload, *val);
+    }
   else
     {
       // embedded message
-      if (wt != 2)
-        return false;
-      std::uint32_t len;
-      if (!cis.ReadVarint32(&len))
-        return false;
-      std::string payload(static_cast<std::size_t>(len), '\0');
-      if (!cis.ReadRaw(payload.data(), static_cast<int>(len)))
-        return false;
-      val = M{};
-      return parse(payload, val);
+      if constexpr (std::is_same_v<M, UnknownField>)
+        return false;  // internal single-entry type is never a wire message
+      else
+        {
+          std::string payload;
+          if (!read_message_payload(cis, wt, payload))
+            return false;
+          val = M{};
+          return parse(payload, val);
+        }
     }
+}
+
+template <typename T, std::size_t I, std::size_t K>
+bool parse_oneof_alt(google::protobuf::io::CodedInputStream &cis,
+                     std::uint32_t fieldno, std::uint32_t wt, T &v)
+{
+  constexpr meta::info r = member_v<T, I>;
+  using M = typename [: meta::type_of(r) :];
+  if (fieldno != field_number<r, K>())
+    return false;
+  using Alt = std::variant_alternative_t<K + 1, M>;
+  Alt val{};
+  if (!parse_value(cis, wt, val))
+    return false;
+  v.[:r:].template emplace<K + 1>(std::move(val));
+  return true;
+}
+
+template <typename T, std::size_t I, std::size_t... Ks>
+bool parse_oneof_member(google::protobuf::io::CodedInputStream &cis,
+                        std::uint32_t fieldno, std::uint32_t wt, T &v,
+                        std::index_sequence<Ks...>)
+{
+  // Repeated occurrences of a oneof: last one wins (emplace overwrites).
+  bool handled = false;
+  ((handled = handled || parse_oneof_alt<T, I, Ks>(cis, fieldno, wt, v)),
+   ...);
+  return handled;
 }
 
 template <typename T, std::size_t I>
@@ -730,9 +1163,20 @@ bool parse_member(google::protobuf::io::CodedInputStream &cis,
 {
   constexpr meta::info r = member_v<T, I>;
   using M = typename [: meta::type_of(r) :];
-  if (fieldno != I + 1)
-    return false;
-  return parse_value(cis, wt, v.[:r:]);
+  if constexpr (is_one_of_v<M>)
+    {
+      return parse_oneof_member<T, I>(
+          cis, fieldno, wt, v,
+          std::make_index_sequence<std::variant_size_v<M> - 1>{});
+    }
+  else
+    {
+      // UnknownFields members have no annotation -> field_number returns 0,
+      // which never matches a real tag, so they fall through to capture.
+      if (fieldno != field_number<r, 0>())
+        return false;
+      return parse_value(cis, wt, v.[:r:]);
+    }
 }
 
 template <typename T, std::size_t... Is>
@@ -833,6 +1277,7 @@ inline bool skip_field(google::protobuf::io::CodedInputStream &cis,
 template <typename T>
 bool parse(std::string_view data, T &v)
 {
+  check_layout<T>();
   google::protobuf::io::ArrayInputStream ais(data.data(),
                                              static_cast<int>(data.size()));
   google::protobuf::io::CodedInputStream cis(&ais);
@@ -859,6 +1304,47 @@ bool parse(std::string_view data, T &v)
         }
     }
   return true;
+}
+
+// --- deep equality (test helper) ---------------------------------------
+// unique_ptr members are dereferenced recursively; strings / containers /
+// variants / enums use operator==; anything else (messages, wire wrappers)
+// is compared member-wise via reflection.  Lets message structs with
+// unique_ptr members keep a one-line operator== without writing out every
+// member.
+
+template <typename T> bool deep_equal(T const &a, T const &b);
+
+template <typename T>
+bool deep_equal_message(T const &a, T const &b)
+{
+  bool ok = true;
+  template for (constexpr auto m :
+                std::define_static_array(
+                    meta::nonstatic_data_members_of(^^T, members_ctx())))
+    {
+      if (!deep_equal(a.[:m:], b.[:m:]))
+        ok = false;
+    }
+  return ok;
+}
+
+template <typename T>
+bool deep_equal(T const &a, T const &b)
+{
+  if constexpr (is_unique_ptr_v<T>)
+    {
+      if (!a && !b)
+        return true;
+      return a && b && deep_equal(*a, *b);
+    }
+  else if constexpr (std::is_arithmetic_v<T> || std::is_enum_v<T>
+                     || std::is_same_v<T, std::string> || is_vector_v<T>
+                     || is_map_v<T> || is_optional_v<T> || is_one_of_v<T>
+                     || std::is_same_v<T, UnknownFields>)
+    return a == b;
+  else
+    return deep_equal_message(a, b);
 }
 
 }  // namespace rpb

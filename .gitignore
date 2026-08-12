@@ -3,6 +3,10 @@ protobuf-3.21.12/
 build*/
 reflect-proto/build/
 reflect-proto/tests/gen/
+reflect-proto/tests/gen_tt/
 reflect-proto/tests/ref
 reflect-proto/tests/ref.bin
 reflect-proto/tests/ours.bin
+reflect-proto/tests/ref_tt
+reflect-proto/tests/ref_tt.bin
+reflect-proto/tests/ours_tt.bin
