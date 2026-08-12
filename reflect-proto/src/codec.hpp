@@ -198,26 +198,31 @@ template <typename T> struct SInt
   using value_type = T;
   T value{};
   bool operator==(SInt const &) const = default;
+  auto operator<=>(SInt const &) const = default;  // usable as map key
 };
 struct Fixed32
 {
   std::uint32_t value{};
   bool operator==(Fixed32 const &) const = default;
+  auto operator<=>(Fixed32 const &) const = default;
 };
 struct SFixed32
 {
   std::int32_t value{};
   bool operator==(SFixed32 const &) const = default;
+  auto operator<=>(SFixed32 const &) const = default;
 };
 struct Fixed64
 {
   std::uint64_t value{};
   bool operator==(Fixed64 const &) const = default;
+  auto operator<=>(Fixed64 const &) const = default;
 };
 struct SFixed64
 {
   std::int64_t value{};
   bool operator==(SFixed64 const &) const = default;
+  auto operator<=>(SFixed64 const &) const = default;
 };
 // Forces a packable element type to be encoded unpacked (one tag per
 // element), like `[packed=false]` in proto.
@@ -225,6 +230,14 @@ template <typename T> struct Unpacked
 {
   T value{};
   bool operator==(Unpacked const &) const = default;
+};
+// Explicit bytes field (wire type 2), a distinct type from std::string so
+// a std::variant can hold both string and bytes alternatives (e.g. oneof
+// with oneof_string + oneof_bytes).
+struct Bytes
+{
+  std::string value{};
+  bool operator==(Bytes const &) const = default;
 };
 
 template <typename T> struct is_sint_wrapper : std::false_type {};
@@ -242,6 +255,11 @@ template <typename T> struct is_unpacked_wrapper<Unpacked<T>>
     : std::true_type {};
 template <typename T> inline constexpr bool is_unpacked_wrapper_v =
     is_unpacked_wrapper<T>::value;
+
+template <typename T> struct is_bytes_wrapper : std::false_type {};
+template <> struct is_bytes_wrapper<Bytes> : std::true_type {};
+template <typename T> inline constexpr bool is_bytes_wrapper_v =
+    is_bytes_wrapper<T>::value;
 
 template <typename T>
 inline constexpr bool is_wire_wrapper_v =
@@ -295,7 +313,7 @@ template <typename M>
 inline constexpr bool is_omittable_v =
     std::is_arithmetic_v<M> || std::is_enum_v<M>
     || std::is_same_v<M, std::string> || is_wire_wrapper_v<M>
-    || is_vector_v<M> || is_map_v<M>;
+    || is_bytes_wrapper_v<M> || is_vector_v<M> || is_map_v<M>;
 
 // A by-value member that is neither a scalar/container nor a
 // presence-bearing type (optional/unique_ptr/oneof) is a plain nested
@@ -308,6 +326,7 @@ inline constexpr bool is_plain_message_v =
     && !std::is_same_v<M, std::string> && !is_vector_v<M> && !is_map_v<M>
     && !is_optional_v<M> && !is_unique_ptr_v<M> && !is_one_of_v<M>
     && !is_wire_wrapper_v<M> && !is_unpacked_wrapper_v<M>
+    && !is_bytes_wrapper_v<M>
     && !std::is_same_v<M, UnknownField> && !std::is_same_v<M, UnknownFields>;
 
 template <typename M>
@@ -323,6 +342,8 @@ bool is_default_value(M const &v)
     return v.value == typename M::value_type{};
   else if constexpr (is_fixed_wrapper_v<M>)
     return v.value == 0;
+  else if constexpr (is_bytes_wrapper_v<M>)
+    return v.value.empty();
   else
     return v.empty();  // vectors: empty repeated fields are omitted
 }
@@ -637,6 +658,12 @@ void serialize_value(google::protobuf::io::CodedOutputStream &cos,
       cos.WriteVarint32(static_cast<std::uint32_t>(val.size()));
       cos.WriteRaw(val.data(), static_cast<int>(val.size()));
     }
+  else if constexpr (is_bytes_wrapper_v<M>)
+    {
+      cos.WriteTag((fieldno << 3) | 2);
+      cos.WriteVarint32(static_cast<std::uint32_t>(val.value.size()));
+      cos.WriteRaw(val.value.data(), static_cast<int>(val.value.size()));
+    }
   else if constexpr (std::is_floating_point_v<M>)
     {
       if constexpr (sizeof(M) == 4)
@@ -929,6 +956,8 @@ bool parse_value(google::protobuf::io::CodedInputStream &cis, std::uint32_t wt,
         return false;
       return true;
     }
+  else if constexpr (is_bytes_wrapper_v<M>)
+    return read_message_payload(cis, wt, val.value);
   else if constexpr (std::is_floating_point_v<M>)
     {
       if constexpr (sizeof(M) == 4)

@@ -91,6 +91,13 @@ static void make_fixture(m::TestAllTypesProto3 &p)
   (*p.mutable_map_int64_int64())[3] = 4;
   (*p.mutable_map_uint32_uint32())[5] = 6;
   (*p.mutable_map_uint64_uint64())[7] = 8;
+  (*p.mutable_map_sint32_sint32())[-1] = -2;
+  (*p.mutable_map_sint64_sint64())[-3] = -4;
+  (*p.mutable_map_fixed32_fixed32())[0x11111111u] = 0x22222222u;
+  (*p.mutable_map_fixed64_fixed64())[0x3333333333333333ull] =
+      0x4444444444444444ull;
+  (*p.mutable_map_sfixed32_sfixed32())[-5] = -6;
+  (*p.mutable_map_sfixed64_sfixed64())[-7] = -8;
   (*p.mutable_map_int32_float())[9] = 1.5f;
   (*p.mutable_map_int32_double())[10] = -2.5;
   (*p.mutable_map_bool_bool())[true] = false;
@@ -171,6 +178,16 @@ static void make_fixture(m::TestAllTypesProto3 &p)
   p.mutable_optional_double_wrapper()->set_value(-2.5);
   p.mutable_optional_string_wrapper()->set_value("w");
   p.mutable_optional_bytes_wrapper()->set_value("\x09", 1);
+
+  auto &os = *p.mutable_optional_struct();
+  (*os.mutable_fields())["k"].set_number_value(3.5);
+  p.mutable_optional_value()->set_string_value("str");
+  p.add_repeated_value()->set_bool_value(true);
+  p.add_repeated_value()->set_number_value(1.5);
+  p.add_repeated_list_value()->add_values()->set_string_value("x");
+  (*(*p.add_repeated_struct()->mutable_fields())["a"]
+        .mutable_struct_value()
+        ->mutable_fields())["x"].set_bool_value(true);
 }
 
 int main()

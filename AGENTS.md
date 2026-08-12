@@ -201,7 +201,10 @@ reflection-generated getopt table, `#embed` prime tables, contracts, and
   last-wins on parse; `std::unique_ptr<T>` -> singular message with real
   presence (null omitted; breaks by-value recursion cycles, e.g.
   `TestAllTypesProto3.recursive_message`); nested struct -> embedded
-  message.
+  message; `rpb::Bytes` -> explicit bytes (LEN), a distinct type from
+  `std::string` so a `std::variant` can hold both string and bytes oneof
+  alternatives.  Wire wrappers (`SInt`/`Fixed*`) have defaulted `<=>` and
+  work as `std::map` keys, so sint/fixed-key maps encode correctly.
 - proto3 semantics: default-valued scalar/string/enum members and empty
   packed vectors are omitted; nested messages serialize unless all their
   members are default/absent (value semantics cannot distinguish unset from
@@ -220,12 +223,15 @@ reflection-generated getopt table, `#embed` prime tables, contracts, and
   `test_messages_proto3.proto` `TestAllTypesProto3` (mirror in
   `reflect-proto/src/test_messages.hpp`). Recursive fields
   (`NestedMessage.corecursive`, `recursive_message`) are covered through
-  `std::unique_ptr`. Known unrepresentable bits, omitted from the mirror
-  and left unset in the shared fixture: `oneof_string` (bytes == string
-  collides in `std::variant`), Struct/Value/ListValue (mutually
-  recursive), and sint/fixed **map keys** (60-65: zigzag/fixed key
-  encoding needs wrapper key types that `std::map` cannot order).
-  `ctype=STRING_PIECE/CORD` fields have private accessors in generated
-  3.21 code; `ref_main_tt` sets them via `TextFormat::MergeFromString`.
+  `std::unique_ptr`; the 10-alternative oneof includes both string and
+  bytes (via `rpb::Bytes`); Struct/Value/ListValue break their mutual
+  recursion through `unique_ptr` oneof alternatives; all 19 maps are
+  covered (sint/fixed keys use the wrappers).  Remaining omitted (wire-wise
+  redundant): repeated wrappers (211-219), Duration/Timestamp/FieldMask/Any
+  (301-315), fieldname* (401-418).  `ctype=STRING_PIECE/CORD` fields have
+  private accessors in generated 3.21 code; `ref_main_tt` sets them via
+  `TextFormat::MergeFromString`.  Protobuf `Map` serialization order is
+  hash order (unspecified) while ours is sorted, so the differential
+  fixture keeps maps single-entry.
 - libprotobuf is linked only for wire primitives (`CodedInputStream`/
   `CodedOutputStream`); there is no descriptor/reflection runtime by design.

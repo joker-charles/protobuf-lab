@@ -7,12 +7,8 @@
 // of a hand-rolled one.  Differential fixture lives in main_tt.cpp /
 // tests/ref_main_tt.cc (kept in sync).
 //
-// Deliberately omitted (wire-wise redundant or unrepresentable):
-//   - oneof_field.oneof_string (113): bytes and string both map to
-//     std::string, and std::variant cannot hold two identical types.
-//   - Struct/Value/ListValue (304/306/316/317/324): mutually recursive.
-//   - repeated wrappers (211-219), Duration/Timestamp/FieldMask/Any
-//     (301-315), fieldname* (401-418): redundant wire coverage.
+// Deliberately omitted (wire-wise redundant): repeated wrappers (211-219),
+// Duration/Timestamp/FieldMask/Any (301-315), fieldname* (401-418).
 // All omitted fields stay unset in the shared fixture, so protobuf omits
 // them from the wire bytes and they never reach our parser.
 
@@ -117,6 +113,45 @@ struct BytesValue
   bool operator==(BytesValue const &) const = default;
 };
 
+struct StructValue;
+struct ListValue;
+
+// google.protobuf.Value: oneof of six kinds.  struct/list alternatives
+// break the mutual recursion through unique_ptr.
+struct Value
+{
+  [[=rpb::field_no<1>{}, =rpb::field_no<2>{}, =rpb::field_no<3>{},
+    =rpb::field_no<4>{}, =rpb::field_no<5>{}, =rpb::field_no<6>{}]]
+  rpb::OneOf<NullValue, double, std::string, bool,
+             std::unique_ptr<StructValue>, std::unique_ptr<ListValue>>
+      kind;
+
+  bool operator==(Value const &o) const
+  {
+    return rpb::deep_equal(*this, o);
+  }
+};
+
+// google.protobuf.Struct: map<string, Value>.
+struct StructValue
+{
+  [[=rpb::field_no<1>{}]] std::map<std::string, Value> fields;
+  bool operator==(StructValue const &o) const
+  {
+    return rpb::deep_equal(*this, o);
+  }
+};
+
+// google.protobuf.ListValue: repeated Value.
+struct ListValue
+{
+  [[=rpb::field_no<1>{}]] std::vector<Value> values;
+  bool operator==(ListValue const &o) const
+  {
+    return rpb::deep_equal(*this, o);
+  }
+};
+
 struct TestAllTypesProto3
 {
   // Singular scalars (1-15).
@@ -170,14 +205,20 @@ struct TestAllTypesProto3
   [[=rpb::field_no<54>{}]] std::vector<std::string> repeated_string_piece;
   [[=rpb::field_no<55>{}]] std::vector<std::string> repeated_cord;
 
-  // Maps (56-59, 66-74), single entry in the shared fixture (byte order
-  // stable).  map_sint32/sint64/fixed32/fixed64/sfixed32/sfixed64 keys
-  // (60-65) are omitted: zigzag/fixed key encoding is not representable
-  // with plain std::map key types in the current codec.
+  // Maps (56-74), single entry in the shared fixture (byte order stable).
+  // sint/fixed keys (60-65) use the rpb wire wrappers as std::map keys.
   [[=rpb::field_no<56>{}]] std::map<std::int32_t, std::int32_t> map_int32_int32;
   [[=rpb::field_no<57>{}]] std::map<std::int64_t, std::int64_t> map_int64_int64;
   [[=rpb::field_no<58>{}]] std::map<std::uint32_t, std::uint32_t> map_uint32_uint32;
   [[=rpb::field_no<59>{}]] std::map<std::uint64_t, std::uint64_t> map_uint64_uint64;
+  [[=rpb::field_no<60>{}]]
+  std::map<rpb::SInt<std::int32_t>, rpb::SInt<std::int32_t>> map_sint32_sint32;
+  [[=rpb::field_no<61>{}]]
+  std::map<rpb::SInt<std::int64_t>, rpb::SInt<std::int64_t>> map_sint64_sint64;
+  [[=rpb::field_no<62>{}]] std::map<rpb::Fixed32, rpb::Fixed32> map_fixed32_fixed32;
+  [[=rpb::field_no<63>{}]] std::map<rpb::Fixed64, rpb::Fixed64> map_fixed64_fixed64;
+  [[=rpb::field_no<64>{}]] std::map<rpb::SFixed32, rpb::SFixed32> map_sfixed32_sfixed32;
+  [[=rpb::field_no<65>{}]] std::map<rpb::SFixed64, rpb::SFixed64> map_sfixed64_sfixed64;
   [[=rpb::field_no<66>{}]] std::map<std::int32_t, float> map_int32_float;
   [[=rpb::field_no<67>{}]] std::map<std::int32_t, double> map_int32_double;
   [[=rpb::field_no<68>{}]] std::map<bool, bool> map_bool_bool;
@@ -220,12 +261,14 @@ struct TestAllTypesProto3
   [[=rpb::field_no<101>{}]] std::vector<rpb::Unpacked<bool>> unpacked_bool;
   [[=rpb::field_no<102>{}]] std::vector<rpb::Unpacked<NestedEnum>> unpacked_nested_enum;
 
-  // Oneof (111-120; oneof_string 113 omitted, bytes == string collision).
+  // Oneof (111-120).  oneof_bytes (114) is rpb::Bytes so the variant can
+  // hold both string and bytes alternatives.
   [[=rpb::field_no<111>{}, =rpb::field_no<112>{}, =rpb::field_no<114>{},
-    =rpb::field_no<115>{}, =rpb::field_no<116>{}, =rpb::field_no<117>{},
-    =rpb::field_no<118>{}, =rpb::field_no<119>{}, =rpb::field_no<120>{}]]
-  rpb::OneOf<std::uint32_t, NestedMessage, std::string, bool, std::uint64_t,
-             float, double, NestedEnum, NullValue>
+    =rpb::field_no<113>{}, =rpb::field_no<115>{}, =rpb::field_no<116>{},
+    =rpb::field_no<117>{}, =rpb::field_no<118>{}, =rpb::field_no<119>{},
+    =rpb::field_no<120>{}]]
+  rpb::OneOf<std::uint32_t, NestedMessage, rpb::Bytes, std::string, bool,
+             std::uint64_t, float, double, NestedEnum, NullValue>
       oneof_field;
 
   // Optional wrappers (201-209).
@@ -238,6 +281,14 @@ struct TestAllTypesProto3
   [[=rpb::field_no<207>{}]] DoubleValue optional_double_wrapper;
   [[=rpb::field_no<208>{}]] StringValue optional_string_wrapper;
   [[=rpb::field_no<209>{}]] BytesValue optional_bytes_wrapper;
+
+  // Well-known types with mutual recursion (Struct/Value/ListValue).
+  [[=rpb::field_no<304>{}]] StructValue optional_struct;
+  [[=rpb::field_no<306>{}]] Value optional_value;
+  [[=rpb::field_no<307>{}]] NullValue optional_null_value;
+  [[=rpb::field_no<316>{}]] std::vector<Value> repeated_value;
+  [[=rpb::field_no<317>{}]] std::vector<ListValue> repeated_list_value;
+  [[=rpb::field_no<324>{}]] std::vector<StructValue> repeated_struct;
 
   bool operator==(TestAllTypesProto3 const &o) const
   {

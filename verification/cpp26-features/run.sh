@@ -23,7 +23,7 @@ report() { # name pass detail
 for t in a1_for_each a2_name_of a3_extract_enum a4_range_for_splice \
          a6_range_splice_tmpl_args a7_nttp_reflect a8_tf_vector_direct \
          b3d_cast_tf_loopvar b7_tf_byvalue_helper b8_api_surface \
-         b9_tf_static_arr_var c2c_embed_trailing; do
+         b9_tf_static_arr_var c2c_embed_trailing a10_annotation_mixed_attr; do
   if "$GXX" $FLAGS "$t.cpp" -o "$BUILD/$t" 2>"$BUILD/$t.log"; then
     report "$t" 0 "COMPILE-OK (should fail)"
   else
@@ -54,7 +54,7 @@ for t in a5_subscript_splice a5b_member_subscript_splice b1_member_index \
          b1b_member_index_static_arr b2_member_type b3a_value_splice_bind \
          b3b_cast_splice_direct b3c_cast_member_splice b4_member_count \
          b5_tf_direct b6_tf_nttp_helper b8b_api_surface b9b_tf_static_local \
-         b9c_tf_namespace_var c1_define_static_std c1b_object_rvalue \
+         b9c_tf_namespace_var a9_annotation_splice c1_define_static_std c1b_object_rvalue \
          c1c_object_namespace c2a_embed_same_dir c3a_contracts_ok c4_ckd; do
   if "$GXX" $FLAGS "$t.cpp" -o "$BUILD/$t" 2>"$BUILD/$t.log"; then
     if "$BUILD/$t" >"$BUILD/$t.run" 2>&1; then

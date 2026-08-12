@@ -77,6 +77,16 @@ static tmm::TestAllTypesProto3 make_fixture()
   p.map_int64_int64 = {{3, 4}};
   p.map_uint32_uint32 = {{5, 6}};
   p.map_uint64_uint64 = {{7, 8}};
+  p.map_sint32_sint32 = {{rpb::SInt<std::int32_t>{-1},
+                          rpb::SInt<std::int32_t>{-2}}};
+  p.map_sint64_sint64 = {{rpb::SInt<std::int64_t>{-3},
+                          rpb::SInt<std::int64_t>{-4}}};
+  p.map_fixed32_fixed32 = {{rpb::Fixed32{0x11111111u},
+                            rpb::Fixed32{0x22222222u}}};
+  p.map_fixed64_fixed64 = {{rpb::Fixed64{0x3333333333333333ull},
+                            rpb::Fixed64{0x4444444444444444ull}}};
+  p.map_sfixed32_sfixed32 = {{rpb::SFixed32{-5}, rpb::SFixed32{-6}}};
+  p.map_sfixed64_sfixed64 = {{rpb::SFixed64{-7}, rpb::SFixed64{-8}}};
   p.map_int32_float = {{9, 1.5f}};
   p.map_int32_double = {{10, -2.5}};
   p.map_bool_bool = {{true, false}};
@@ -144,6 +154,24 @@ static tmm::TestAllTypesProto3 make_fixture()
   p.optional_string_wrapper = tmm::StringValue{"w"};
   p.optional_bytes_wrapper = tmm::BytesValue{std::string("\x09", 1)};
 
+  // Well-known types: Struct / Value / ListValue (mutual recursion broken
+  // by unique_ptr oneof alternatives).  Maps stay single-entry: protobuf
+  // Map serialization order is unspecified (hash order), ours is sorted.
+  p.optional_struct.fields["k"].kind = 3.5;
+  p.optional_value.kind = std::string("str");
+  p.repeated_value.push_back(tmm::Value{});
+  p.repeated_value.back().kind = true;
+  p.repeated_value.push_back(tmm::Value{});
+  p.repeated_value.back().kind = 1.5;
+  tmm::ListValue lv;
+  lv.values.push_back(tmm::Value{});
+  lv.values.back().kind = std::string("x");
+  p.repeated_list_value.push_back(std::move(lv));
+  tmm::StructValue sv;
+  sv.fields["a"].kind = std::make_unique<tmm::StructValue>();
+  std::get<5>(sv.fields["a"].kind)->fields["x"].kind = true;
+  p.repeated_struct.push_back(std::move(sv));
+
   return p;
 }
 
@@ -163,6 +191,18 @@ static void self_test()
   rpb::serialize(bytes, p);
   tmm::TestAllTypesProto3 q;
   check(rpb::parse(bytes, q) && q == p, "roundtrip");
+
+  // The 10-alternative oneof with both string and Bytes alternatives.
+  p.oneof_field = std::string("note");
+  bytes.clear();
+  rpb::serialize(bytes, p);
+  tmm::TestAllTypesProto3 q2;
+  check(rpb::parse(bytes, q2) && q2 == p, "oneof string roundtrip");
+  p.oneof_field = rpb::Bytes{std::string("\x01\x02", 2)};
+  bytes.clear();
+  rpb::serialize(bytes, p);
+  tmm::TestAllTypesProto3 q3;
+  check(rpb::parse(bytes, q3) && q3 == p, "oneof bytes roundtrip");
 }
 
 static void emit_fixture()
