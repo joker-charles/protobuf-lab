@@ -1,0 +1,8 @@
+# protobuf reference source and build artifacts
+protobuf-3.21.12/
+build*/
+reflect-proto/build/
+reflect-proto/tests/gen/
+reflect-proto/tests/ref
+reflect-proto/tests/ref.bin
+reflect-proto/tests/ours.bin
