@@ -24,6 +24,15 @@ target_include_directories(reflect_proto_tt PRIVATE SYSTEM ${PB_ROOT}/src)
 target_link_libraries(reflect_proto_tt PRIVATE ${PB_ROOT}/build/libprotobuf.a
                       pthread z)
 
+add_executable(conformance_ours src/conformance_ours.cpp
+               ${PB_ROOT}/conformance/conformance.pb.cc)
+target_compile_options(conformance_ours PRIVATE -freflection -Wall -Wextra
+                       -Wpedantic -Wconversion)
+target_include_directories(conformance_ours PRIVATE SYSTEM
+                           ${PB_ROOT}/src ${PB_ROOT}/conformance)
+target_link_libraries(conformance_ours PRIVATE ${PB_ROOT}/build/libprotobuf.a
+                      pthread z)
+
 include(CTest)
 if(BUILD_TESTING)
   add_test(NAME selftest COMMAND reflect_proto --test)
@@ -31,4 +40,6 @@ if(BUILD_TESTING)
   add_test(NAME interop COMMAND sh ${CMAKE_CURRENT_SOURCE_DIR}/tests/interop.sh)
   add_test(NAME interop_tt
            COMMAND sh ${CMAKE_CURRENT_SOURCE_DIR}/tests/interop_tt.sh)
+  add_test(NAME conformance
+           COMMAND sh ${CMAKE_CURRENT_SOURCE_DIR}/tests/conformance.sh)
 endif()

@@ -1,0 +1,4 @@
+# Expected-failure list for the official conformance suite.
+# Currently empty: the proto3 binary protobuf_test category passes fully
+# (637 required cases).  Add one test name per line if a regression appears
+# (see conformance_test_runner --verbose for exact names).

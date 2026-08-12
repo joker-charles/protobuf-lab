@@ -370,12 +370,22 @@ static void test_unknown_field()
   bytes.push_back(static_cast<char>(0x98));
   bytes.push_back(static_cast<char>(0x06));
   bytes.push_back(static_cast<char>(0x2A));
+  // Append an unknown length-delimited field: field 98, len 3, "abc".
+  // tag = (98 << 3) | 2 = 786 -> varint 92 06 ; len 03 ; "abc".
+  bytes.push_back(static_cast<char>(0x92));
+  bytes.push_back(static_cast<char>(0x06));
+  bytes.push_back(static_cast<char>(0x03));
+  bytes.push_back('a');
+  bytes.push_back('b');
+  bytes.push_back('c');
   Person q;
   check(rpb::parse(bytes, q), "unknown field parsed");
-  check(q.unknown.size() == 1 && q.unknown[0].fieldno == 99
+  check(q.unknown.size() == 2 && q.unknown[0].fieldno == 99
             && q.unknown[0].wire_type == 0
-            && q.unknown[0].raw == std::string("\x2A", 1),
-        "unknown field captured");
+            && q.unknown[0].raw == std::string("\x2A", 1)
+            && q.unknown[1].fieldno == 98 && q.unknown[1].wire_type == 2
+            && q.unknown[1].raw == std::string("\x03" "abc", 4),
+        "unknown fields captured (varint + length-delimited)");
   std::string re;
   rpb::serialize(re, q);
   check(re == bytes, "unknown field re-serialized");

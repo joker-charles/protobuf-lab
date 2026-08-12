@@ -60,6 +60,7 @@ struct NestedMessage
 {
   [[=rpb::field_no<1>{}]] std::int32_t a;
   [[=rpb::field_no<2>{}]] std::unique_ptr<TestAllTypesProto3> corecursive;
+  rpb::UnknownFields unknown;  // conformance: nested unknowns preserved
   bool operator==(NestedMessage const &o) const
   {
     return rpb::deep_equal(*this, o);
@@ -171,8 +172,11 @@ struct TestAllTypesProto3
   [[=rpb::field_no<14>{}]] std::string optional_string;
   [[=rpb::field_no<15>{}]] std::string optional_bytes;
 
-  [[=rpb::field_no<18>{}]] NestedMessage optional_nested_message;
-  [[=rpb::field_no<19>{}]] ForeignMessage optional_foreign_message;
+  // Singular message fields use unique_ptr: proto3 message fields have
+  // real presence, so "set but empty" (e.g. conformance MESSAGE[0]) must
+  // serialize, unlike a value-semantics struct member.
+  [[=rpb::field_no<18>{}]] std::unique_ptr<NestedMessage> optional_nested_message;
+  [[=rpb::field_no<19>{}]] std::unique_ptr<ForeignMessage> optional_foreign_message;
 
   [[=rpb::field_no<21>{}]] NestedEnum optional_nested_enum;
   [[=rpb::field_no<22>{}]] ForeignEnum optional_foreign_enum;
@@ -272,23 +276,25 @@ struct TestAllTypesProto3
       oneof_field;
 
   // Optional wrappers (201-209).
-  [[=rpb::field_no<201>{}]] BoolValue optional_bool_wrapper;
-  [[=rpb::field_no<202>{}]] Int32Value optional_int32_wrapper;
-  [[=rpb::field_no<203>{}]] Int64Value optional_int64_wrapper;
-  [[=rpb::field_no<204>{}]] UInt32Value optional_uint32_wrapper;
-  [[=rpb::field_no<205>{}]] UInt64Value optional_uint64_wrapper;
-  [[=rpb::field_no<206>{}]] FloatValue optional_float_wrapper;
-  [[=rpb::field_no<207>{}]] DoubleValue optional_double_wrapper;
-  [[=rpb::field_no<208>{}]] StringValue optional_string_wrapper;
-  [[=rpb::field_no<209>{}]] BytesValue optional_bytes_wrapper;
+  [[=rpb::field_no<201>{}]] std::unique_ptr<BoolValue> optional_bool_wrapper;
+  [[=rpb::field_no<202>{}]] std::unique_ptr<Int32Value> optional_int32_wrapper;
+  [[=rpb::field_no<203>{}]] std::unique_ptr<Int64Value> optional_int64_wrapper;
+  [[=rpb::field_no<204>{}]] std::unique_ptr<UInt32Value> optional_uint32_wrapper;
+  [[=rpb::field_no<205>{}]] std::unique_ptr<UInt64Value> optional_uint64_wrapper;
+  [[=rpb::field_no<206>{}]] std::unique_ptr<FloatValue> optional_float_wrapper;
+  [[=rpb::field_no<207>{}]] std::unique_ptr<DoubleValue> optional_double_wrapper;
+  [[=rpb::field_no<208>{}]] std::unique_ptr<StringValue> optional_string_wrapper;
+  [[=rpb::field_no<209>{}]] std::unique_ptr<BytesValue> optional_bytes_wrapper;
 
   // Well-known types with mutual recursion (Struct/Value/ListValue).
-  [[=rpb::field_no<304>{}]] StructValue optional_struct;
-  [[=rpb::field_no<306>{}]] Value optional_value;
+  [[=rpb::field_no<304>{}]] std::unique_ptr<StructValue> optional_struct;
+  [[=rpb::field_no<306>{}]] std::unique_ptr<Value> optional_value;
   [[=rpb::field_no<307>{}]] NullValue optional_null_value;
   [[=rpb::field_no<316>{}]] std::vector<Value> repeated_value;
   [[=rpb::field_no<317>{}]] std::vector<ListValue> repeated_list_value;
   [[=rpb::field_no<324>{}]] std::vector<StructValue> repeated_struct;
+
+  rpb::UnknownFields unknown;  // conformance: unknown fields preserved
 
   bool operator==(TestAllTypesProto3 const &o) const
   {

@@ -233,5 +233,19 @@ reflection-generated getopt table, `#embed` prime tables, contracts, and
   `TextFormat::MergeFromString`.  Protobuf `Map` serialization order is
   hash order (unspecified) while ours is sorted, so the differential
   fixture keeps maps single-entry.
+- Official conformance suite: `conformance` ctest runs protobuf's
+  `conformance_test_runner` against `conformance_ours` (a stdin/stdout
+  testee speaking the 4-byte-length-prefixed Conformance protocol).  Build
+  the runner with `tests/build_conformance_runner.sh` -- the vendored 3.21
+  `cmake/conformance.cmake` omits `conformance_test_main.cc` and
+  `text_format_conformance_suite.cc` (no `main()`, link failure), which
+  that script patches idempotently.  Status: 637 required proto3 binary
+  `protobuf_test` cases pass (incl. message-merge semantics, present-empty
+  messages via `unique_ptr`, unknown-field preservation); JSON/text/proto2
+  categories are skipped by the adapter.  Merge support came from parsing
+  repeated occurrences of singular/oneof message fields into the existing
+  value instead of replacing; RECOMMENDED-level packed/unpacked output-form
+  alternatives show up as warnings only (not enforced).  The failure list
+  (`tests/conformance_failures.txt`) is currently empty.
 - libprotobuf is linked only for wire primitives (`CodedInputStream`/
   `CodedOutputStream`); there is no descriptor/reflection runtime by design.

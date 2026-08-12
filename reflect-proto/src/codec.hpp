@@ -1139,7 +1139,8 @@ bool parse_value(google::protobuf::io::CodedInputStream &cis, std::uint32_t wt,
       std::string payload;
       if (!read_message_payload(cis, wt, payload))
         return false;
-      val = std::make_unique<typename M::element_type>();
+      if (!val)
+        val = std::make_unique<typename M::element_type>();
       return parse(payload, *val);
     }
   else
@@ -1152,7 +1153,8 @@ bool parse_value(google::protobuf::io::CodedInputStream &cis, std::uint32_t wt,
           std::string payload;
           if (!read_message_payload(cis, wt, payload))
             return false;
-          val = M{};
+          // Merge into the existing value: protobuf merges repeated
+          // occurrences of a singular message field instead of replacing.
           return parse(payload, val);
         }
     }
@@ -1166,6 +1168,12 @@ bool parse_oneof_alt(google::protobuf::io::CodedInputStream &cis,
   using M = typename [: meta::type_of(r) :];
   if (fieldno != field_number<r, K>())
     return false;
+  if (v.[:r:].index() == K + 1)
+    {
+      // Same oneof alternative already active: merge into it (protobuf
+      // semantics), so repeated message occurrences accumulate fields.
+      return parse_value(cis, wt, std::get<K + 1>(v.[:r:]));
+    }
   using Alt = std::variant_alternative_t<K + 1, M>;
   Alt val{};
   if (!parse_value(cis, wt, val))
@@ -1247,8 +1255,19 @@ inline bool capture_unknown_field(google::protobuf::io::CodedInputStream &cis,
         std::uint32_t len;
         if (!cis.ReadVarint32(&len))
           return false;
-        uf.raw.resize(len);
-        if (!cis.ReadRaw(uf.raw.data(), static_cast<int>(len)))
+        // Store the length prefix inside raw so re-emission is just
+        // tag + raw for every wire type.
+        std::string head;
+        {
+          google::protobuf::io::StringOutputStream sos(&head);
+          google::protobuf::io::CodedOutputStream cos(&sos);
+          cos.WriteVarint32(len);
+        }
+        uf.raw = std::move(head);
+        std::size_t base = uf.raw.size();
+        uf.raw.resize(base + len);
+        if (!cis.ReadRaw(uf.raw.data() + static_cast<int>(base),
+                         static_cast<int>(len)))
           return false;
         break;
       }
@@ -1318,6 +1337,8 @@ bool parse(std::string_view data, T &v)
         break;  // clean EOF
       std::uint32_t fieldno = tag >> 3;
       std::uint32_t wt = tag & 7;
+      if (fieldno == 0)
+        return false;  // protobuf: field number 0 is an illegal tag
       if (!parse_fields<T>(cis, fieldno, wt, v,
                            std::make_index_sequence<member_count_v<T>>{}))
         {

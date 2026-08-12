@@ -33,8 +33,10 @@ static tmm::TestAllTypesProto3 make_fixture()
   p.optional_bytes = std::string("\x01\x02\x03", 3);
 
   // Nested messages and enums.
-  p.optional_nested_message = tmm::NestedMessage{123, nullptr};
-  p.optional_foreign_message = tmm::ForeignMessage{456};
+  p.optional_nested_message = std::make_unique<tmm::NestedMessage>();
+  p.optional_nested_message->a = 123;
+  p.optional_foreign_message = std::make_unique<tmm::ForeignMessage>();
+  p.optional_foreign_message->c = 456;
   p.optional_nested_enum = tmm::NestedEnum::BAZ;
   p.optional_foreign_enum = tmm::ForeignEnum::FOREIGN_BAR;
   p.optional_aliased_enum = tmm::AliasedEnum::ALIAS_BAZ;
@@ -43,9 +45,9 @@ static tmm::TestAllTypesProto3 make_fixture()
   p.recursive_message = std::make_unique<tmm::TestAllTypesProto3>();
   p.recursive_message->optional_int32 = 77;
   p.recursive_message->optional_string = "deep";
-  p.optional_nested_message.corecursive =
+  p.optional_nested_message->corecursive =
       std::make_unique<tmm::TestAllTypesProto3>();
-  p.optional_nested_message.corecursive->optional_uint64 = 88;
+  p.optional_nested_message->corecursive->optional_uint64 = 88;
 
   // Repeated.
   p.repeated_int32 = {1, -2};
@@ -144,21 +146,24 @@ static tmm::TestAllTypesProto3 make_fixture()
   p.oneof_field = tmm::NestedMessage{99, nullptr};
 
   // Optional wrappers.
-  p.optional_bool_wrapper = tmm::BoolValue{true};
-  p.optional_int32_wrapper = tmm::Int32Value{-32};
-  p.optional_int64_wrapper = tmm::Int64Value{-64};
-  p.optional_uint32_wrapper = tmm::UInt32Value{32};
-  p.optional_uint64_wrapper = tmm::UInt64Value{64};
-  p.optional_float_wrapper = tmm::FloatValue{1.5f};
-  p.optional_double_wrapper = tmm::DoubleValue{-2.5};
-  p.optional_string_wrapper = tmm::StringValue{"w"};
-  p.optional_bytes_wrapper = tmm::BytesValue{std::string("\x09", 1)};
+  p.optional_bool_wrapper = std::make_unique<tmm::BoolValue>(true);
+  p.optional_int32_wrapper = std::make_unique<tmm::Int32Value>(-32);
+  p.optional_int64_wrapper = std::make_unique<tmm::Int64Value>(-64);
+  p.optional_uint32_wrapper = std::make_unique<tmm::UInt32Value>(32);
+  p.optional_uint64_wrapper = std::make_unique<tmm::UInt64Value>(64);
+  p.optional_float_wrapper = std::make_unique<tmm::FloatValue>(1.5f);
+  p.optional_double_wrapper = std::make_unique<tmm::DoubleValue>(-2.5);
+  p.optional_string_wrapper = std::make_unique<tmm::StringValue>("w");
+  p.optional_bytes_wrapper =
+      std::make_unique<tmm::BytesValue>(std::string("\x09", 1));
 
   // Well-known types: Struct / Value / ListValue (mutual recursion broken
   // by unique_ptr oneof alternatives).  Maps stay single-entry: protobuf
   // Map serialization order is unspecified (hash order), ours is sorted.
-  p.optional_struct.fields["k"].kind = 3.5;
-  p.optional_value.kind = std::string("str");
+  p.optional_struct = std::make_unique<tmm::StructValue>();
+  p.optional_struct->fields["k"].kind = 3.5;
+  p.optional_value = std::make_unique<tmm::Value>();
+  p.optional_value->kind = std::string("str");
   p.repeated_value.push_back(tmm::Value{});
   p.repeated_value.back().kind = true;
   p.repeated_value.push_back(tmm::Value{});
