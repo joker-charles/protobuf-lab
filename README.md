@@ -37,6 +37,19 @@ merge, present-but-empty messages, unknown fields, illegal tags,
 truncated input).  JSON, text-format, and proto2 categories are skipped by
 the testee.  See `tests/conformance_failures.txt` (currently empty).
 
+## Project scope
+
+This is an **experimental wire codec, not a protobuf reimplementation**.
+It targets the proto3 binary wire format for struct-shaped messages and
+deliberately reuses protobuf's own wire primitives
+(`CodedInputStream`/`CodedOutputStream`) and official test suites.  The
+point of the experiment is that C++26 static reflection can drive
+serialization with **no code-generation step and no runtime descriptor** —
+the struct *is* the schema.  Full protobuf parity (descriptors,
+JSON/text formats, proto2, extensions, cross-language tooling) is
+explicitly out of scope.  Success criterion: can struct-as-schema replace
+the protoc pipeline for a useful proto3 subset?
+
 ## Requirements
 
 - **g++-16** (`-std=c++26 -freflection`; the system default g++ rejects
@@ -45,6 +58,62 @@ the testee.  See `tests/conformance_failures.txt` (currently empty).
 - CMake >= 3.20.
 - Network access on first configure: protobuf **v3.21.12** is fetched
   automatically via `FetchContent`.
+
+## Usage
+
+The codec is a **header-only library** (`src/codec.hpp`): the annotated
+struct *is* the schema, so there is no `.proto` file and no code-generation
+step.  It requires g++-16 with C++26 `-freflection`, which the `rpb`
+CMake target propagates automatically.
+
+### As a CMake dependency
+
+```cmake
+include(FetchContent)
+FetchContent_Declare(reflect_proto
+  GIT_REPOSITORY https://github.com/joker-charles/protobuf-lab.git
+  GIT_TAG main)  # pin a tag once releases exist
+FetchContent_MakeAvailable(reflect_proto)
+target_link_libraries(your_target PRIVATE rpb)
+```
+
+### Minimal example
+
+```cpp
+#include "codec.hpp"
+
+struct Greeting {
+  [[=rpb::field_no<1>{}]] std::string name;
+  [[=rpb::field_no<2>{}]] std::int32_t times;
+};
+
+int main() {
+  Greeting g;
+  g.name = "world";
+  g.times = 3;
+  std::string bytes;
+  rpb::serialize(bytes, g);   // 0A 05 77 6F 72 6C 64 10 03
+
+  Greeting back;
+  rpb::parse(bytes, back);    // field-order independent; messages merge
+  return 0;
+}
+```
+
+A runnable version is in `examples/roundtrip.cpp`.
+
+### Constraints to plan around
+
+- g++-16 with C++26 `-freflection` is the only hard toolchain requirement.
+- proto3 binary wire format for struct-shaped messages only; JSON, text
+  format, and proto2 are not implemented (see "Project scope").
+- Field numbers come from `[[=rpb::field_no<N>{}]]` annotations: adding or
+  removing members does not change the wire format, but renumbering does.
+- Singular message members: use `std::unique_ptr<T>` for real presence
+  (including recursion); plain by-value members are omitted when
+  all-default.
+- Unknown fields are preserved only when the struct carries an
+  `rpb::UnknownFields` member.
 
 ## Build and test
 
@@ -118,15 +187,12 @@ verification/   one-file compiler-behavior probes (run.sh)
 
 ## Future plans
 
-- **proto2 support** (required fields, groups, extensions, defaults) and
-  enabling the proto2 half of the conformance suite.
-- **JSON and text-format support**, including the well-known-type JSON
-  mapping (Struct/Value/Any/Duration/Timestamp/FieldMask, NaN/Inf,
-  enum-as-string).
+### Engineering hardening (incremental)
+
 - **Serialization depth limit** to match the parser's 64-level recursion
   guard.
-- **`optional<T>` message merge** for full parity with protobuf's merge
-  semantics.
+- **`optional<T>` message merge** so repeated occurrences merge instead of
+  replacing, matching the codec's plain-member/oneof behavior.
 - **Complete the `TestAllTypesProto3` mirror**: repeated wrappers
   (211-219), Duration/Timestamp/FieldMask/Any (301-315), fieldname*
   (401-418).
@@ -135,8 +201,18 @@ verification/   one-file compiler-behavior probes (run.sh)
 - **CI**: GitHub Actions workflow building with g++-16 (needs the
   stonking/26.10 archive or a compatible image) and running `ctest`,
   including the conformance suite.
-- **Benchmarks** against the official implementation, and micro-optimizing
-  the hot serialization/parsing paths.
+- **Benchmarks** against the official implementation and micro-optimizing
+  the hot serialization/parsing paths — the evidence that decides whether
+  the experiment is worth continuing.
+
+### Research directions (optional, not parity goals)
+
+- **proto2 support** (required fields, groups, extensions, defaults) and
+  the proto2 half of the conformance suite — only meaningful if the
+  struct-as-schema experiment succeeds and a proto2 subset is wanted.
+- **JSON and text-format support**, including the well-known-type JSON
+  mapping (Struct/Value/Any/Duration/Timestamp/FieldMask, NaN/Inf,
+  enum-as-string).
 
 ## License
 

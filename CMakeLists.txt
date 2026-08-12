@@ -43,6 +43,18 @@ function(reflect_compile tgt)
   target_link_libraries(${tgt} PRIVATE protobuf::libprotobuf)
 endfunction()
 
+# --- the codec as a header-only library --------------------------------
+# Consumers: FetchContent this repo and `target_link_libraries(... rpb)`.
+# The target propagates C++26, -freflection, and the protobuf dependency.
+add_library(rpb INTERFACE)
+target_include_directories(rpb INTERFACE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+target_link_libraries(rpb INTERFACE protobuf::libprotobuf)
+target_compile_features(rpb INTERFACE cxx_std_26)
+target_compile_options(rpb INTERFACE -freflection)
+
+add_executable(example examples/roundtrip.cpp)
+target_link_libraries(example PRIVATE rpb)
+
 # --- codec binaries ----------------------------------------------------
 add_executable(reflect_proto src/main.cpp)
 reflect_compile(reflect_proto)

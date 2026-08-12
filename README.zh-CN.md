@@ -31,6 +31,17 @@ map 含 sint/fixed 键、oneof、消息合并、显式空消息、未知字段�
 截断输入）。JSON、text format、proto2 类目由 testee 跳过。
 `tests/conformance_failures.txt` 当前为空。
 
+## 项目定位
+
+这是一个**实验性 wire codec，不是 protobuf 的重实现**。它只覆盖
+struct 型消息的 proto3 二进制 wire 格式，并刻意复用 protobuf 自己的
+wire 原语（`CodedInputStream`/`CodedOutputStream`）和官方测试套件。
+实验的目的是证明 C++26 静态反射能驱动序列化——**无代码生成、无运行时
+descriptor**，结构体本身就是 schema。protobuf 全量对齐（descriptor、
+JSON/text 格式、proto2、扩展、跨语言工具链）明确不在范围内。实验的
+成功标准：在有用的 proto3 子集上，“结构体即 schema”能否替代 protoc
+管线？
+
 ## 环境要求
 
 - **g++-16**（`-std=c++26 -freflection`；系统默认 g++ 不支持
@@ -38,6 +49,59 @@ map 含 sint/fixed 键、oneof、消息合并、显式空消息、未知字段�
 - CMake >= 3.20。
 - 首次 configure 需要网络：protobuf **v3.21.12** 通过 `FetchContent`
   自动拉取。
+
+## 用法
+
+codec 是**纯头文件库**（`src/codec.hpp`）：带注解的 struct 本身就是
+schema，没有 `.proto` 文件、没有代码生成步骤。需要 g++-16 的 C++26
+`-freflection`，`rpb` CMake 目标会自动传播这些要求。
+
+### 作为 CMake 依赖
+
+```cmake
+include(FetchContent)
+FetchContent_Declare(reflect_proto
+  GIT_REPOSITORY https://github.com/joker-charles/protobuf-lab.git
+  GIT_TAG main)  # 有 release 后建议固定 tag
+FetchContent_MakeAvailable(reflect_proto)
+target_link_libraries(your_target PRIVATE rpb)
+```
+
+### 最小示例
+
+```cpp
+#include "codec.hpp"
+
+struct Greeting {
+  [[=rpb::field_no<1>{}]] std::string name;
+  [[=rpb::field_no<2>{}]] std::int32_t times;
+};
+
+int main() {
+  Greeting g;
+  g.name = "world";
+  g.times = 3;
+  std::string bytes;
+  rpb::serialize(bytes, g);   // 0A 05 77 6F 72 6C 64 10 03
+
+  Greeting back;
+  rpb::parse(bytes, back);    // 解析与字段顺序无关；消息字段合并
+  return 0;
+}
+```
+
+可运行版本见 `examples/roundtrip.cpp`。
+
+### 使用前要了解的限制
+
+- 唯一硬性工具链要求：g++-16 的 C++26 `-freflection`。
+- 仅支持 struct 型消息的 proto3 二进制 wire 格式；JSON、text format、
+  proto2 未实现（见“项目定位”）。
+- 字段号来自 `[[=rpb::field_no<N>{}]]` 注解：增删成员不改变 wire 格式，
+  但改字段号会。
+- 单值消息成员：需要真实 presence（含递归）时用 `std::unique_ptr<T>`；
+  按值成员全默认时会被省略。
+- 未知字段只在 struct 带 `rpb::UnknownFields` 成员时保留。
 
 ## 构建与测试
 
@@ -105,19 +169,30 @@ verification/   单文件编译器行为探针（run.sh）
 
 ## 未来计划
 
-- **proto2 支持**（required、group、扩展、默认值），并启用 conformance
-  的 proto2 半区。
-- **JSON 与 text format 支持**，包括 well-known type 的 JSON 映射
-  （Struct/Value/Any/Duration/Timestamp/FieldMask、NaN/Inf、枚举字符串化）。
+按上述定位划分——工程收口 + 可选研究方向，不是通往 protobuf 全量对齐
+的路线图。
+
+### 工程收口（增量）
+
 - **序列化深度限制**，对齐解析器的 64 层递归防护。
-- **`optional<T>` 消息合并**，实现与 protobuf merge 语义的完全对齐。
+- **`optional<T>` 消息合并**：重复出现时合并而非替换，与普通成员/oneof
+  的行为一致。
 - **补全 `TestAllTypesProto3` 镜像**：repeated wrappers（211-219）、
   Duration/Timestamp/FieldMask/Any（301-315）、fieldname*（401-418）。
 - **强制 RECOMMENDED 级 conformance**（当前只强制 REQUIRED；
   packed/unpacked 输出形式差异仅是警告）。
 - **CI**：GitHub Actions 用 g++-16（需 stonking/26.10 源或兼容镜像）
   构建并跑 `ctest`，包含 conformance 套件。
-- **基准测试**：与官方实现对比，优化序列化/解析热路径。
+- **基准测试**：与官方实现对比、优化序列化/解析热路径——这是判断实验
+  是否值得继续投入的证据。
+
+### 研究方向（可选，非 parity 目标）
+
+- **proto2 支持**（required、group、扩展、默认值），并启用 conformance
+  的 proto2 半区——仅当“结构体即 schema”实验成功且确实需要 proto2 子集
+  时才有意义。
+- **JSON 与 text format 支持**，包括 well-known type 的 JSON 映射
+  （Struct/Value/Any/Duration/Timestamp/FieldMask、NaN/Inf、枚举字符串化）。
 
 ## 许可证
 
