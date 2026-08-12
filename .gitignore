@@ -10,3 +10,4 @@ reflect-proto/tests/ours.bin
 reflect-proto/tests/ref_tt
 reflect-proto/tests/ref_tt.bin
 reflect-proto/tests/ours_tt.bin
+failing_tests.txt
