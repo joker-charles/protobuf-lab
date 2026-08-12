@@ -16,6 +16,12 @@
 //   std::vector<T> (string/message)  -> repeated length-delimited
 //   std::optional<T>                 -> optional field (skipped when empty)
 //   nested struct                    -> embedded message, wire type 2
+//   UnknownFields (trailing member)  -> unknown-field preservation
+//
+// proto3 default omission: scalar / string / bytes / enum members equal to
+// their default (and empty packed vectors) are not serialized. Nested
+// messages and optionals-with-value are always serialized. Repeated
+// length-delimited elements are never omitted, even when empty.
 
 #pragma once
 
@@ -125,6 +131,70 @@ inline constexpr bool is_wire_wrapper_v =
 // floating point, and the wire wrappers above.
 template <typename T>
 inline constexpr bool is_packable_v = is_numeric_v<T> || is_wire_wrapper_v<T>;
+
+// --- unknown-field preservation -----------------------------------------
+// A struct may carry a trailing member of type UnknownFields; fields the
+// codec does not recognize are captured there and re-emitted verbatim on
+// serialization (mirroring protobuf's UnknownFieldSet). Without the member,
+// unknown fields are skipped as before. Put the member last so it does not
+// shift the field numbers of the real fields.
+
+struct UnknownField
+{
+  std::uint32_t fieldno;
+  std::uint32_t wire_type;
+  std::string raw;  // payload bytes only (tag is reconstructed)
+  bool operator==(UnknownField const &) const = default;
+};
+using UnknownFields = std::vector<UnknownField>;
+
+template <typename T, std::size_t I>
+inline constexpr bool is_unknown_member_v =
+    std::is_same_v<typename [: meta::type_of(member_v<T, I>) :], UnknownFields>;
+
+template <typename T, std::size_t... Is>
+constexpr std::size_t find_unknown_index(std::index_sequence<Is...>)
+{
+  std::size_t idx = member_count_v<T>;
+  ((idx = is_unknown_member_v<T, Is> ? Is : idx), ...);
+  return idx;
+}
+
+template <typename T>
+inline constexpr std::size_t unknown_member_index_v =
+    find_unknown_index<T>(std::make_index_sequence<member_count_v<T>>{});
+
+template <typename T>
+inline constexpr bool has_unknown_fields_v =
+    unknown_member_index_v<T> != member_count_v<T>;
+
+// --- proto3 default-value omission ---------------------------------------
+
+template <typename M>
+inline constexpr bool is_omittable_v =
+    std::is_arithmetic_v<M> || std::is_enum_v<M>
+    || std::is_same_v<M, std::string> || is_wire_wrapper_v<M>
+    || is_vector_v<M>;
+
+template <typename M>
+bool is_default_value(M const &v)
+{
+  if constexpr (std::is_integral_v<M> || std::is_enum_v<M>)
+    {
+      using R = underlying_or_self_t<M>;
+      return static_cast<R>(v) == R{};
+    }
+  else if constexpr (std::is_floating_point_v<M>)
+    return v == 0.0;
+  else if constexpr (std::is_same_v<M, std::string>)
+    return v.empty();
+  else if constexpr (is_sint_wrapper_v<M>)
+    return v.value == typename M::value_type{};
+  else if constexpr (is_fixed_wrapper_v<M>)
+    return v.value == 0;
+  else
+    return v.empty();  // vectors: empty repeated fields are omitted
+}
 
 // --- zigzag (sint32/sint64) helpers, matching protobuf's encoding ---
 
@@ -251,6 +321,14 @@ void serialize_value(google::protobuf::io::CodedOutputStream &cos,
       cos.WriteTag((fieldno << 3) | 1);
       cos.WriteLittleEndian64(std::bit_cast<std::uint64_t>(val.value));
     }
+  else if constexpr (std::is_same_v<M, UnknownFields>)
+    {
+      for (auto const &uf : val)
+        {
+          cos.WriteTag((uf.fieldno << 3) | uf.wire_type);
+          cos.WriteRaw(uf.raw.data(), static_cast<int>(uf.raw.size()));
+        }
+    }
   else if constexpr (is_vector_v<M>)
     {
       using U = typename M::value_type;
@@ -293,6 +371,11 @@ void serialize_member(google::protobuf::io::CodedOutputStream &cos, T const &v)
 {
   constexpr meta::info r = member_v<T, I>;
   using M = typename [: meta::type_of(r) :];
+  if constexpr (is_omittable_v<M>)
+    {
+      if (is_default_value(v.[:r:]))
+        return;
+    }
   serialize_value(cos, static_cast<std::uint32_t>(I + 1), v.[:r:]);
 }
 
@@ -565,8 +648,54 @@ bool parse_fields(google::protobuf::io::CodedInputStream &cis,
   return handled;
 }
 
+inline bool capture_unknown_field(google::protobuf::io::CodedInputStream &cis,
+                                  std::uint32_t fieldno, std::uint32_t wt,
+                                  UnknownFields &out)
+{
+  UnknownField uf{fieldno, wt, {}};
+  switch (wt)
+    {
+    case 0:
+      {
+        std::uint64_t tmp;
+        if (!cis.ReadVarint64(&tmp))
+          return false;
+        // Re-encode canonically; unknown varints are stored by value, like
+        // protobuf's UnknownFieldSet.
+        google::protobuf::io::StringOutputStream sos(&uf.raw);
+        google::protobuf::io::CodedOutputStream cos(&sos);
+        cos.WriteVarint64(tmp);
+        break;
+      }
+    case 1:
+      uf.raw.resize(8);
+      if (!cis.ReadRaw(uf.raw.data(), 8))
+        return false;
+      break;
+    case 2:
+      {
+        std::uint32_t len;
+        if (!cis.ReadVarint32(&len))
+          return false;
+        uf.raw.resize(len);
+        if (!cis.ReadRaw(uf.raw.data(), static_cast<int>(len)))
+          return false;
+        break;
+      }
+    case 5:
+      uf.raw.resize(4);
+      if (!cis.ReadRaw(uf.raw.data(), 4))
+        return false;
+      break;
+    default:
+      return false;  // groups (3/4) are skipped, not captured
+    }
+  out.push_back(std::move(uf));
+  return true;
+}
+
 inline bool skip_field(google::protobuf::io::CodedInputStream &cis,
-                       std::uint32_t wt)
+                       std::uint32_t fieldno, std::uint32_t wt)
 {
   switch (wt)
     {
@@ -584,10 +713,23 @@ inline bool skip_field(google::protobuf::io::CodedInputStream &cis,
           return false;
         return cis.Skip(static_cast<int>(len));
       }
+    case 3:  // start group: skip until the matching end-group tag
+      for (;;)
+        {
+          std::uint32_t tag = cis.ReadTag();
+          if (tag == 0)
+            return false;  // truncated group
+          std::uint32_t fn = tag >> 3;
+          std::uint32_t w = tag & 7;
+          if (w == 4)
+            return fn == fieldno;
+          if (!skip_field(cis, fn, w))
+            return false;
+        }
     case 5:
       return cis.Skip(4);
     default:
-      return false;  // groups (3/4) are not supported
+      return false;
     }
 }
 
@@ -608,7 +750,14 @@ bool parse(std::string_view data, T &v)
       if (!parse_fields<T>(cis, fieldno, wt, v,
                            std::make_index_sequence<member_count_v<T>>{}))
         {
-          if (!skip_field(cis, wt))
+          if constexpr (has_unknown_fields_v<T>)
+            {
+              if (capture_unknown_field(
+                      cis, fieldno, wt,
+                      v.[: member_v<T, unknown_member_index_v<T>> :]))
+                continue;
+            }
+          if (!skip_field(cis, fieldno, wt))
             return false;
         }
     }

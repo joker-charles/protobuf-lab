@@ -169,24 +169,40 @@ reflection-generated getopt table, `#embed` prime tables, contracts, and
 ## Current task state (protobuf codec)
 
 - `reflect-proto/src/codec.hpp`: reflection codec (field number = member
-  position + 1; string/integral/float/double/vector-packed/optional/nested
-  mapped per protobuf wire rules) built on protobuf's own
-  `CodedOutputStream`/`CodedInputStream`.
+  position + 1; string/bytes/integral/enum/float/double/sint (zigzag)/fixed
+  wrappers/packed vectors/optional/nested mapped per protobuf wire rules;
+  proto3 default-value omission; a trailing `rpb::UnknownFields` member
+  preserves and re-emits unknown fields; unknown groups are skipped) built
+  on protobuf's own `CodedOutputStream`/`CodedInputStream` - libprotobuf is
+  linked only for wire primitives, no descriptor/reflection runtime.
 - `reflect-proto/src/main.cpp`: self-tests (hand-computed bytes, roundtrip,
-  unknown-field skip, truncated input) + `--emit`/`--parse-file` fixtures.
+  unknown-field capture + re-serialize, group skip, truncated input) +
+  `--emit`/`--parse-file` fixtures.
 - `reflect-proto/tests/`: `test.proto`, `ref_main.cc` (official protoc
   reference), `interop.sh` (byte-compare ours vs official).
-- **Status**: builds with g++-16; `ctest` passes (selftest: hand-computed
-  bytes, roundtrip, unknown-field skip, truncated input; interop: byte-level
-  match with official protoc output and parsing of official bytes).
-- **Next**: commit once the `.git` mount is handled (see below); then
-  extend coverage (more wire types, enums, packed non-numeric variants).
+- **Status**: committed (baseline `fc135c3`, wire extension `10ece28`,
+  proto3-semantics batch); builds with g++-16; `ctest` passes (selftest +
+  byte-level interop with official protoc covering enum, sint, fixed, packed
+  bool/enum/sint/fixed, bytes, repeated string).
+- **Next**: map support (`std::map<K,V>` -> entry messages with key=1 /
+  value=2); `[packed=false]` via `std::vector<rpb::Unpacked<T>>`; oneof
+  (needs an explicit field-number design, `std::variant`). A runtime
+  Descriptor/Reflection system is deliberately NOT planned - this project
+  exists to replace that layer with compile-time reflection.
+
+## Decisions (2026-08-12)
+
+- C++ modules: **not adopted**. GCC 16's C++20 modules are still
+  experimental (`-fmodules`), and the codec is header-only template code
+  where modules provide no ABI/macro/build benefit. Revisit only as a
+  separate demo target, never as a conversion of the working build.
+- Default-value omission, unknown-field preservation and group skipping are
+  implemented (proto3 semantics batch); runtime descriptor was ruled out.
 
 ## Environment quirks
 
 - `.git`, `.agents`, `.codex` are **read-only tmpfs mounts** in the sandbox
-  root; `git init` is blocked until the user removes the `.git` mount (same
-  as the coreutils repo earlier).
+  root; the `.git` mount has been removed (2026-08-12) and git commits work.
 - Network is restricted: downloads require approval.
 - `/tmp` is disk-backed but treated as scratch; keep reference sources in
   the repo directory.

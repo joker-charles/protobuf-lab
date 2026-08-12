@@ -46,6 +46,7 @@ struct Person
   std::vector<rpb::Fixed32> hashes;
   std::vector<bool> flags;
   std::vector<std::string> tags;
+  rpb::UnknownFields unknown;  // must stay last: captures unknown fields
 
   bool operator==(Person const &o) const
   {
@@ -54,7 +55,7 @@ struct Person
            && palette == o.palette && blob == o.blob && delta == o.delta
            && big == o.big && fx32 == o.fx32 && sfx64 == o.sfx64
            && samples == o.samples && hashes == o.hashes && flags == o.flags
-           && tags == o.tags;
+           && tags == o.tags && unknown == o.unknown;
   }
 };
 
@@ -73,35 +74,14 @@ static void test_hand_bytes()
   // 1: name "Alice"         0A 05 41 6C 69 63 65
   // 2: id = -1 (int32)      10 FF*9 01
   // 3: lucky packed [1,2]   1A 02 01 02
-  // 4: score = 0.0 (double) 21 00*8
-  // 5: home {city:"X",zip:0} 2A 05 0A 01 58 10 00
-  // New members keep defaults (the codec serializes every member):
-  // 7: color=RED(0)            38 00
-  // 8: palette=[] packed       42 00
-  // 9: blob=""                 4A 00
-  // 10: delta=0 zigzag         50 00
-  // 11: big=0 zigzag           58 00
-  // 12: fx32=0                 65 00 00 00 00
-  // 13: sfx64=0                69 00 00 00 00 00 00 00 00
-  // 14: samples=[] packed      72 00
-  // 15: hashes=[] packed       7A 00
-  // 16: flags=[] packed        82 01 00
+  // 4: score = 0.0 (default) omitted
+  // 5: home {city:"X",zip:0} 2A 03 0A 01 58 (zip=0 default omitted inside)
+  // 6-17: all defaults / empty -> omitted (proto3 semantics)
   static unsigned char const expected[] = {
       0x0A, 0x05, 'A', 'l', 'i', 'c', 'e',
       0x10, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x01,
       0x1A, 0x02, 0x01, 0x02,
-      0x21, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-      0x2A, 0x05, 0x0A, 0x01, 'X', 0x10, 0x00,
-      0x38, 0x00,
-      0x42, 0x00,
-      0x4A, 0x00,
-      0x50, 0x00,
-      0x58, 0x00,
-      0x65, 0x00, 0x00, 0x00, 0x00,
-      0x69, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-      0x72, 0x00,
-      0x7A, 0x00,
-      0x82, 0x01, 0x00};
+      0x2A, 0x03, 0x0A, 0x01, 'X'};
 
   Person p;
   p.name = "Alice";
@@ -212,7 +192,32 @@ static void test_unknown_field()
   bytes.push_back(static_cast<char>(0x06));
   bytes.push_back(static_cast<char>(0x2A));
   Person q;
-  check(rpb::parse(bytes, q) && q == p, "unknown field skipped");
+  check(rpb::parse(bytes, q), "unknown field parsed");
+  check(q.unknown.size() == 1 && q.unknown[0].fieldno == 99
+            && q.unknown[0].wire_type == 0
+            && q.unknown[0].raw == std::string("\x2A", 1),
+        "unknown field captured");
+  std::string re;
+  rpb::serialize(re, q);
+  check(re == bytes, "unknown field re-serialized");
+}
+
+static void test_group_skip()
+{
+  Person p = make_fixture();
+  std::string bytes;
+  rpb::serialize(bytes, p);
+  // Append an unknown group: field 20 start (tag A3 01), inner field 1
+  // varint 7 (08 07), end group (tag A4 01).
+  bytes.push_back(static_cast<char>(0xA3));
+  bytes.push_back(static_cast<char>(0x01));
+  bytes.push_back(static_cast<char>(0x08));
+  bytes.push_back(static_cast<char>(0x07));
+  bytes.push_back(static_cast<char>(0xA4));
+  bytes.push_back(static_cast<char>(0x01));
+  Person q;
+  check(rpb::parse(bytes, q), "group field skipped");
+  check(q == p, "group skip preserves fields");
 }
 
 static void test_truncated()
@@ -234,6 +239,7 @@ static void run_tests()
   test_hand_wire_types();
   test_roundtrip();
   test_unknown_field();
+  test_group_skip();
   test_truncated();
 }
 
