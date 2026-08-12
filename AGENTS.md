@@ -166,7 +166,11 @@ reflection-generated getopt table, `#embed` prime tables, contracts, and
   `SInt<T>` -> zigzag varint; `Fixed32/SFixed32` -> 4-byte LE;
   `Fixed64/SFixed64` -> 8-byte LE; float/double -> 4/8-byte LE; packable
   vectors -> packed LEN; `vector<string/message>` -> repeated LEN;
-  `optional<T>` -> presence; nested struct -> embedded message.
+  `vector<Unpacked<T>>` -> repeated unpacked (tag per element);
+  `std::map<K,V>` -> repeated map-entry messages (key=1/value=2, serialized
+  in `std::map` sorted order; protobuf map order is unspecified, so
+  byte-level interop uses single-entry maps); `optional<T>` -> presence;
+  nested struct -> embedded message.
 - proto3 semantics: default-valued scalar/string/enum members and empty
   packed vectors are omitted; nested messages and optionals-with-value always
   serialize; empty repeated string elements still emit.

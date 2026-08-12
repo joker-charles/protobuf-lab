@@ -31,4 +31,6 @@ message Person {
   repeated fixed32 hashes = 15;
   repeated bool flags = 16;
   repeated string tags = 17;
+  map<string, int32> scores = 18;
+  repeated int32 unpacked_nums = 19 [packed=false];
 }

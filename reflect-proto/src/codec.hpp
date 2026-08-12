@@ -14,6 +14,8 @@
 //   float / double                   -> wire type 5 / 1
 //   std::vector<T> (packable T)      -> packed, wire type 2
 //   std::vector<T> (string/message)  -> repeated length-delimited
+//   std::vector<Unpacked<T>>         -> repeated unpacked (tag per element)
+//   std::map<K,V>                    -> repeated map-entry messages (k=1,v=2)
 //   std::optional<T>                 -> optional field (skipped when empty)
 //   nested struct                    -> embedded message, wire type 2
 //   UnknownFields (trailing member)  -> unknown-field preservation
@@ -29,6 +31,7 @@
 
 #include <bit>
 #include <cstdint>
+#include <map>
 #include <optional>
 #include <string>
 #include <type_traits>
@@ -65,6 +68,11 @@ template <typename T> struct is_optional : std::false_type {};
 template <typename T> struct is_optional<std::optional<T>> : std::true_type {};
 template <typename T> inline constexpr bool is_optional_v =
     is_optional<T>::value;
+
+template <typename T> struct is_map : std::false_type {};
+template <typename K, typename V, typename C, typename A>
+struct is_map<std::map<K, V, C, A>> : std::true_type {};
+template <typename T> inline constexpr bool is_map_v = is_map<T>::value;
 
 template <typename T>
 inline constexpr bool is_numeric_v =
@@ -112,6 +120,13 @@ struct SFixed64
   std::int64_t value{};
   bool operator==(SFixed64 const &) const = default;
 };
+// Forces a packable element type to be encoded unpacked (one tag per
+// element), like `[packed=false]` in proto.
+template <typename T> struct Unpacked
+{
+  T value{};
+  bool operator==(Unpacked const &) const = default;
+};
 
 template <typename T> struct is_sint_wrapper : std::false_type {};
 template <typename T> struct is_sint_wrapper<SInt<T>> : std::true_type {};
@@ -122,6 +137,12 @@ template <typename T>
 inline constexpr bool is_fixed_wrapper_v =
     std::is_same_v<T, Fixed32> || std::is_same_v<T, SFixed32>
     || std::is_same_v<T, Fixed64> || std::is_same_v<T, SFixed64>;
+
+template <typename T> struct is_unpacked_wrapper : std::false_type {};
+template <typename T> struct is_unpacked_wrapper<Unpacked<T>>
+    : std::true_type {};
+template <typename T> inline constexpr bool is_unpacked_wrapper_v =
+    is_unpacked_wrapper<T>::value;
 
 template <typename T>
 inline constexpr bool is_wire_wrapper_v =
@@ -174,7 +195,7 @@ template <typename M>
 inline constexpr bool is_omittable_v =
     std::is_arithmetic_v<M> || std::is_enum_v<M>
     || std::is_same_v<M, std::string> || is_wire_wrapper_v<M>
-    || is_vector_v<M>;
+    || is_vector_v<M> || is_map_v<M>;
 
 template <typename M>
 bool is_default_value(M const &v)
@@ -321,12 +342,34 @@ void serialize_value(google::protobuf::io::CodedOutputStream &cos,
       cos.WriteTag((fieldno << 3) | 1);
       cos.WriteLittleEndian64(std::bit_cast<std::uint64_t>(val.value));
     }
+  else if constexpr (is_unpacked_wrapper_v<M>)
+    serialize_value(cos, fieldno, val.value);
   else if constexpr (std::is_same_v<M, UnknownFields>)
     {
       for (auto const &uf : val)
         {
           cos.WriteTag((uf.fieldno << 3) | uf.wire_type);
           cos.WriteRaw(uf.raw.data(), static_cast<int>(uf.raw.size()));
+        }
+    }
+  else if constexpr (is_map_v<M>)
+    {
+      // Each map entry is an embedded message with key = field 1 and
+      // value = field 2. Entries serialize in std::map (sorted) order;
+      // protobuf does not guarantee map order, so byte-level interop only
+      // uses single-entry maps.
+      for (auto const &kv : val)
+        {
+          std::string payload;
+          {
+            google::protobuf::io::StringOutputStream sos(&payload);
+            google::protobuf::io::CodedOutputStream pcos(&sos);
+            serialize_value(pcos, 1, kv.first);
+            serialize_value(pcos, 2, kv.second);
+          }
+          cos.WriteTag((fieldno << 3) | 2);
+          cos.WriteVarint32(static_cast<std::uint32_t>(payload.size()));
+          cos.WriteRaw(payload.data(), static_cast<int>(payload.size()));
         }
     }
   else if constexpr (is_vector_v<M>)
@@ -469,6 +512,9 @@ bool read_packed_element(google::protobuf::io::CodedInputStream &cis, U &out)
     }
 }
 
+inline bool skip_field(google::protobuf::io::CodedInputStream &cis,
+                       std::uint32_t fieldno, std::uint32_t wt);
+
 template <typename M>
 bool parse_value(google::protobuf::io::CodedInputStream &cis, std::uint32_t wt,
                  M &val)
@@ -566,14 +612,67 @@ bool parse_value(google::protobuf::io::CodedInputStream &cis, std::uint32_t wt,
       val.value = std::bit_cast<decltype(val.value)>(raw);
       return true;
     }
+  else if constexpr (is_unpacked_wrapper_v<M>)
+    return parse_value(cis, wt, val.value);
+  else if constexpr (is_map_v<M>)
+    {
+      if (wt != 2)
+        return false;
+      std::uint32_t len;
+      if (!cis.ReadVarint32(&len))
+        return false;
+      std::string payload(static_cast<std::size_t>(len), '\0');
+      if (!cis.ReadRaw(payload.data(), static_cast<int>(len)))
+        return false;
+      using K = typename M::key_type;
+      using V = typename M::mapped_type;
+      K k{};
+      V v{};
+      google::protobuf::io::ArrayInputStream ais(
+          payload.data(), static_cast<int>(payload.size()));
+      google::protobuf::io::CodedInputStream ecis(&ais);
+      ecis.SetRecursionLimit(64);
+      for (;;)
+        {
+          std::uint32_t tag = ecis.ReadTag();
+          if (tag == 0)
+            break;
+          std::uint32_t fn = tag >> 3;
+          std::uint32_t w = tag & 7;
+          if (fn == 1)
+            {
+              if (!parse_value(ecis, w, k))
+                return false;
+            }
+          else if (fn == 2)
+            {
+              if (!parse_value(ecis, w, v))
+                return false;
+            }
+          else
+            {
+              if (!skip_field(ecis, fn, w))
+                return false;
+            }
+        }
+      val[std::move(k)] = std::move(v);
+      return true;
+    }
   else if constexpr (is_vector_v<M>)
     {
       using U = typename M::value_type;
       if constexpr (is_packable_v<U>)
         {
-          // packed
           if (wt != 2)
-            return false;
+            {
+              // Accept a single unpacked element too; protobuf parsers
+              // accept both packed and unpacked forms for repeated numerics.
+              U e;
+              if (!read_packed_element(cis, e))
+                return false;
+              val.push_back(std::move(e));
+              return true;
+            }
           std::uint32_t len;
           if (!cis.ReadVarint32(&len))
             return false;
@@ -594,8 +693,6 @@ bool parse_value(google::protobuf::io::CodedInputStream &cis, std::uint32_t wt,
       else
         {
           // repeated length-delimited: one element per tag
-          if (wt != 2)
-            return false;
           U e;
           if (!parse_value(cis, wt, e))
             return false;

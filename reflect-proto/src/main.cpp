@@ -5,6 +5,7 @@
 #include <cstdio>
 #include <cstring>
 #include <cstdlib>
+#include <map>
 #include <optional>
 #include <string>
 #include <vector>
@@ -46,6 +47,8 @@ struct Person
   std::vector<rpb::Fixed32> hashes;
   std::vector<bool> flags;
   std::vector<std::string> tags;
+  std::map<std::string, std::int32_t> scores;
+  std::vector<rpb::Unpacked<std::int32_t>> unpacked_nums;
   rpb::UnknownFields unknown;  // must stay last: captures unknown fields
 
   bool operator==(Person const &o) const
@@ -55,7 +58,8 @@ struct Person
            && palette == o.palette && blob == o.blob && delta == o.delta
            && big == o.big && fx32 == o.fx32 && sfx64 == o.sfx64
            && samples == o.samples && hashes == o.hashes && flags == o.flags
-           && tags == o.tags && unknown == o.unknown;
+           && tags == o.tags && scores == o.scores
+           && unpacked_nums == o.unpacked_nums && unknown == o.unknown;
   }
 };
 
@@ -148,6 +152,41 @@ static void test_hand_wire_types()
   check(rpb::parse(bytes, r) && r == w, "parse hand wire-type bytes");
 }
 
+struct MapBits
+{
+  std::map<std::string, std::int32_t> m;   // 1: map<string,int32>
+  std::vector<rpb::Unpacked<std::int32_t>> u;  // 2: repeated int32 unpacked
+
+  bool operator==(MapBits const &) const = default;
+};
+
+static void test_hand_map_unpacked()
+{
+  // 1: map entries (std::map serializes in sorted key order: "a", "b")
+  //    entry a: key "a" 0A 01 61 ; value 3 10 03   -> 0A 05 0A 01 61 10 03
+  //    entry b: key "b" 0A 01 62 ; value 7 10 07   -> 0A 05 0A 01 62 10 07
+  // 2: unpacked [5, -1] (one tag per element)
+  //    10 05 ; 10 FF FF FF FF FF FF FF FF FF 01
+  static unsigned char const expected[] = {
+      0x0A, 0x05, 0x0A, 0x01, 'a', 0x10, 0x03,
+      0x0A, 0x05, 0x0A, 0x01, 'b', 0x10, 0x07,
+      0x10, 0x05,
+      0x10, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x01};
+
+  MapBits w;
+  w.m = {{"b", 7}, {"a", 3}};
+  w.u = {rpb::Unpacked<std::int32_t>{5}, rpb::Unpacked<std::int32_t>{-1}};
+
+  std::string bytes;
+  rpb::serialize(bytes, w);
+  check(bytes.size() == sizeof expected
+            && std::memcmp(bytes.data(), expected, sizeof expected) == 0,
+        "hand-computed map/unpacked bytes");
+
+  MapBits r;
+  check(rpb::parse(bytes, r) && r == w, "parse hand map/unpacked bytes");
+}
+
 static Person make_fixture()
 {
   Person p;
@@ -169,6 +208,11 @@ static Person make_fixture()
   p.hashes = {rpb::Fixed32{0xCAFEBABEu}, rpb::Fixed32{0x12345678u}};
   p.flags = {true, false, true};
   p.tags = {"a", "b"};
+  // Single map entry: protobuf map order is unspecified, so multi-entry
+  // byte-level interop is not guaranteed (covered by selftest instead).
+  p.scores = {{"alice", 3}};
+  p.unpacked_nums = {rpb::Unpacked<std::int32_t>{1},
+                     rpb::Unpacked<std::int32_t>{2}};
   return p;
 }
 
@@ -237,6 +281,7 @@ static void run_tests()
 {
   test_hand_bytes();
   test_hand_wire_types();
+  test_hand_map_unpacked();
   test_roundtrip();
   test_unknown_field();
   test_group_skip();

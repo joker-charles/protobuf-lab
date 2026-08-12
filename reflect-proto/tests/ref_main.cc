@@ -33,6 +33,9 @@ int main()
   p.add_flags(true);
   p.add_tags("a");
   p.add_tags("b");
+  (*p.mutable_scores())["alice"] = 3;
+  p.add_unpacked_nums(1);
+  p.add_unpacked_nums(2);
 
   std::string s;
   if (!p.SerializeToString(&s))
