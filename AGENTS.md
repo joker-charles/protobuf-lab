@@ -208,8 +208,10 @@ reflection-generated getopt table, `#embed` prime tables, contracts, and
   present-but-empty); optionals-with-value and non-null `unique_ptr` always
   serialize; empty repeated string elements still emit.  `rpb::deep_equal`
   compares messages with unique_ptr members by dereferencing recursively
-  (containers/strings/variants use `==`, everything else is compared
-  member-wise via reflection).
+  (containers/strings use `==`; variants compare by index and recurse into
+  the active alternative, since variant `==` would compare unique_ptr
+  alternatives by pointer; everything else is compared member-wise via
+  reflection).
 - Unknown fields: an `rpb::UnknownFields` member (any position, no
   annotation) captures and re-emits them after all known fields; without it
   they are skipped. Groups are skipped, not captured.

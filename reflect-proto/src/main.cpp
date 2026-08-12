@@ -316,6 +316,41 @@ static void test_out_of_order()
   check(rpb::parse(bytes, r) && r == w, "out-of-order roundtrip");
 }
 
+struct RecursiveChoice
+{
+  [[=rpb::field_no<1>{}, =rpb::field_no<2>{}]]
+  rpb::OneOf<std::int32_t, std::unique_ptr<RecursiveChoice>> next;
+
+  bool operator==(RecursiveChoice const &o) const
+  {
+    return rpb::deep_equal(*this, o);
+  }
+};
+
+static void test_recursive_oneof_deep_equal()
+{
+  // Regression: deep_equal must compare oneof alternatives by value, not
+  // via variant::operator== (which would compare unique_ptr by pointer).
+  RecursiveChoice a;
+  a.next = std::make_unique<RecursiveChoice>();
+  std::get<2>(a.next)->next = std::int32_t{42};
+  RecursiveChoice b;  // same structure, different pointer identity
+  b.next = std::make_unique<RecursiveChoice>();
+  std::get<2>(b.next)->next = std::int32_t{42};
+  check(a == b && rpb::deep_equal(a, b),
+        "oneof unique_ptr alternative deep equality");
+
+  RecursiveChoice c;
+  c.next = std::make_unique<RecursiveChoice>();
+  std::get<2>(c.next)->next = std::int32_t{43};
+  check(!(a == c), "oneof unique_ptr alternative inequality");
+
+  std::string bytes;
+  rpb::serialize(bytes, a);
+  RecursiveChoice q;
+  check(rpb::parse(bytes, q) && q == a, "recursive oneof roundtrip");
+}
+
 static void test_roundtrip()
 {
   Person p = make_fixture();
@@ -384,6 +419,7 @@ static void run_tests()
   test_hand_map_unpacked();
   test_oneof_hand_bytes();
   test_out_of_order();
+  test_recursive_oneof_deep_equal();
   test_roundtrip();
   test_unknown_field();
   test_group_skip();

@@ -1308,8 +1308,10 @@ bool parse(std::string_view data, T &v)
 
 // --- deep equality (test helper) ---------------------------------------
 // unique_ptr members are dereferenced recursively; strings / containers /
-// variants / enums use operator==; anything else (messages, wire wrappers)
-// is compared member-wise via reflection.  Lets message structs with
+// enums use operator==; variants compare by index and then recurse into the
+// active alternative (variant::operator== would compare unique_ptr
+// alternatives by pointer); anything else (messages, wire wrappers) is
+// compared member-wise via reflection.  Lets message structs with
 // unique_ptr members keep a one-line operator== without writing out every
 // member.
 
@@ -1340,9 +1342,22 @@ bool deep_equal(T const &a, T const &b)
     }
   else if constexpr (std::is_arithmetic_v<T> || std::is_enum_v<T>
                      || std::is_same_v<T, std::string> || is_vector_v<T>
-                     || is_map_v<T> || is_optional_v<T> || is_one_of_v<T>
+                     || is_map_v<T> || is_optional_v<T>
                      || std::is_same_v<T, UnknownFields>)
     return a == b;
+  else if constexpr (is_one_of_v<T>)
+    {
+      if (a.index() != b.index())
+        return false;
+      if (a.index() == 0)
+        return true;  // both monostate (unset)
+      return std::visit(
+          [&](auto const &x) {
+            return deep_equal(
+                x, std::get<std::remove_cvref_t<decltype(x)>>(b));
+          },
+          a);
+    }
   else
     return deep_equal_message(a, b);
 }
