@@ -16,6 +16,23 @@ int main()
   p.mutable_home()->set_city("X");
   p.mutable_home()->set_zip(-2);
   p.set_nick("N");
+  p.set_color(test::GREEN);
+  p.add_palette(test::GREEN);
+  p.add_palette(test::BLUE);
+  p.set_blob("\x01\x02\x03", 3);
+  p.set_delta(-5);
+  p.set_big(-1234567890123LL);
+  p.set_fx32(0xDEADBEEFu);
+  p.set_sfx64(-42);
+  p.add_samples(-7);
+  p.add_samples(1000000);
+  p.add_hashes(0xCAFEBABEu);
+  p.add_hashes(0x12345678u);
+  p.add_flags(true);
+  p.add_flags(false);
+  p.add_flags(true);
+  p.add_tags("a");
+  p.add_tags("b");
 
   std::string s;
   if (!p.SerializeToString(&s))

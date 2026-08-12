@@ -5,11 +5,14 @@
 // reflection decides which members are which fields.  Field number =
 // member position + 1 (v1 convention).
 //
-// Type mapping (v1):
+// Type mapping (v2):
 //   std::string                      -> wire type 2 (length-delimited)
 //   integral / enum                  -> wire type 0 (varint, sign-extended)
+//   SInt<T> (sint32/sint64)          -> wire type 0 (zigzag)
+//   Fixed32 / SFixed32               -> wire type 5 (little-endian 4)
+//   Fixed64 / SFixed64               -> wire type 1 (little-endian 8)
 //   float / double                   -> wire type 5 / 1
-//   std::vector<T> (numeric T)       -> packed, wire type 2
+//   std::vector<T> (packable T)      -> packed, wire type 2
 //   std::vector<T> (string/message)  -> repeated length-delimited
 //   std::optional<T>                 -> optional field (skipped when empty)
 //   nested struct                    -> embedded message, wire type 2
@@ -74,6 +77,76 @@ template <typename T> struct underlying_or_self<T, true>
 template <typename T> using underlying_or_self_t =
     typename underlying_or_self<T>::type;
 
+// --- explicit wire-type wrappers (protobuf wire types not expressible by a
+// plain C++ type: sint zigzag and fixed-width integers) ---
+
+template <typename T> struct SInt
+{
+  using value_type = T;
+  T value{};
+  bool operator==(SInt const &) const = default;
+};
+struct Fixed32
+{
+  std::uint32_t value{};
+  bool operator==(Fixed32 const &) const = default;
+};
+struct SFixed32
+{
+  std::int32_t value{};
+  bool operator==(SFixed32 const &) const = default;
+};
+struct Fixed64
+{
+  std::uint64_t value{};
+  bool operator==(Fixed64 const &) const = default;
+};
+struct SFixed64
+{
+  std::int64_t value{};
+  bool operator==(SFixed64 const &) const = default;
+};
+
+template <typename T> struct is_sint_wrapper : std::false_type {};
+template <typename T> struct is_sint_wrapper<SInt<T>> : std::true_type {};
+template <typename T> inline constexpr bool is_sint_wrapper_v =
+    is_sint_wrapper<T>::value;
+
+template <typename T>
+inline constexpr bool is_fixed_wrapper_v =
+    std::is_same_v<T, Fixed32> || std::is_same_v<T, SFixed32>
+    || std::is_same_v<T, Fixed64> || std::is_same_v<T, SFixed64>;
+
+template <typename T>
+inline constexpr bool is_wire_wrapper_v =
+    is_sint_wrapper_v<T> || is_fixed_wrapper_v<T>;
+
+// Vectors of anything protobuf can pack: integral (incl. bool), enum,
+// floating point, and the wire wrappers above.
+template <typename T>
+inline constexpr bool is_packable_v = is_numeric_v<T> || is_wire_wrapper_v<T>;
+
+// --- zigzag (sint32/sint64) helpers, matching protobuf's encoding ---
+
+constexpr std::uint32_t zigzag32(std::int32_t n)
+{
+  std::uint32_t u = static_cast<std::uint32_t>(n);
+  return (u << 1) ^ (0u - (u >> 31));
+}
+constexpr std::uint64_t zigzag64(std::int64_t n)
+{
+  std::uint64_t u = static_cast<std::uint64_t>(n);
+  return (u << 1) ^ (0ull - (u >> 63));
+}
+constexpr std::int32_t unzigzag32(std::uint32_t u)
+{
+  return static_cast<std::int32_t>((u >> 1) ^ (0u - (u & 1)));
+}
+constexpr std::int64_t unzigzag64(std::uint64_t u)
+{
+  return static_cast<std::int64_t>((u >> 1) ^ (0ull - (u & 1)));
+}
+
 // --- serialization ---
 
 template <typename T> void serialize(std::string &out, T const &v);
@@ -89,6 +162,23 @@ void write_packed_element(google::protobuf::io::CodedOutputStream &cos,
       else
         cos.WriteLittleEndian64(std::bit_cast<std::uint64_t>(e));
     }
+  else if constexpr (is_sint_wrapper_v<U>)
+    {
+      using R = typename U::value_type;
+      if constexpr (sizeof(R) == 4)
+        cos.WriteVarint64(zigzag32(static_cast<std::int32_t>(e.value)));
+      else if constexpr (sizeof(R) == 8)
+        cos.WriteVarint64(zigzag64(static_cast<std::int64_t>(e.value)));
+      else
+        static_assert(sizeof(R) == 4 || sizeof(R) == 8,
+                      "SInt wrapper must be 4 or 8 bytes");
+    }
+  else if constexpr (std::is_same_v<U, Fixed32>
+                     || std::is_same_v<U, SFixed32>)
+    cos.WriteLittleEndian32(std::bit_cast<std::uint32_t>(e.value));
+  else if constexpr (std::is_same_v<U, Fixed64>
+                     || std::is_same_v<U, SFixed64>)
+    cos.WriteLittleEndian64(std::bit_cast<std::uint64_t>(e.value));
   else
     {
       using R = underlying_or_self_t<U>;
@@ -137,10 +227,34 @@ void serialize_value(google::protobuf::io::CodedOutputStream &cos,
       else
         cos.WriteVarint64(static_cast<std::uint64_t>(static_cast<R>(val)));
     }
+  else if constexpr (is_sint_wrapper_v<M>)
+    {
+      cos.WriteTag((fieldno << 3) | 0);
+      using R = typename M::value_type;
+      if constexpr (sizeof(R) == 4)
+        cos.WriteVarint64(zigzag32(static_cast<std::int32_t>(val.value)));
+      else if constexpr (sizeof(R) == 8)
+        cos.WriteVarint64(zigzag64(static_cast<std::int64_t>(val.value)));
+      else
+        static_assert(sizeof(R) == 4 || sizeof(R) == 8,
+                      "SInt wrapper must be 4 or 8 bytes");
+    }
+  else if constexpr (std::is_same_v<M, Fixed32>
+                     || std::is_same_v<M, SFixed32>)
+    {
+      cos.WriteTag((fieldno << 3) | 5);
+      cos.WriteLittleEndian32(std::bit_cast<std::uint32_t>(val.value));
+    }
+  else if constexpr (std::is_same_v<M, Fixed64>
+                     || std::is_same_v<M, SFixed64>)
+    {
+      cos.WriteTag((fieldno << 3) | 1);
+      cos.WriteLittleEndian64(std::bit_cast<std::uint64_t>(val.value));
+    }
   else if constexpr (is_vector_v<M>)
     {
       using U = typename M::value_type;
-      if constexpr (is_numeric_v<U>)
+      if constexpr (is_packable_v<U>)
         {
           std::string payload;
           {
@@ -222,6 +336,40 @@ bool read_packed_element(google::protobuf::io::CodedInputStream &cis, U &out)
         }
       return true;
     }
+  else if constexpr (is_sint_wrapper_v<U>)
+    {
+      std::uint64_t raw;
+      if (!cis.ReadVarint64(&raw))
+        return false;
+      using R = typename U::value_type;
+      if constexpr (sizeof(R) == 4)
+        out.value =
+            static_cast<R>(unzigzag32(static_cast<std::uint32_t>(raw)));
+      else if constexpr (sizeof(R) == 8)
+        out.value = static_cast<R>(unzigzag64(raw));
+      else
+        static_assert(sizeof(R) == 4 || sizeof(R) == 8,
+                      "SInt wrapper must be 4 or 8 bytes");
+      return true;
+    }
+  else if constexpr (std::is_same_v<U, Fixed32>
+                     || std::is_same_v<U, SFixed32>)
+    {
+      std::uint32_t raw;
+      if (!cis.ReadLittleEndian32(&raw))
+        return false;
+      out.value = std::bit_cast<decltype(out.value)>(raw);
+      return true;
+    }
+  else if constexpr (std::is_same_v<U, Fixed64>
+                     || std::is_same_v<U, SFixed64>)
+    {
+      std::uint64_t raw;
+      if (!cis.ReadLittleEndian64(&raw))
+        return false;
+      out.value = std::bit_cast<decltype(out.value)>(raw);
+      return true;
+    }
   else
     {
       std::uint64_t raw;
@@ -295,10 +443,50 @@ bool parse_value(google::protobuf::io::CodedInputStream &cis, std::uint32_t wt,
         val = static_cast<M>(static_cast<R>(raw));
       return true;
     }
+  else if constexpr (is_sint_wrapper_v<M>)
+    {
+      if (wt != 0)
+        return false;
+      std::uint64_t raw;
+      if (!cis.ReadVarint64(&raw))
+        return false;
+      using R = typename M::value_type;
+      if constexpr (sizeof(R) == 4)
+        val.value =
+            static_cast<R>(unzigzag32(static_cast<std::uint32_t>(raw)));
+      else if constexpr (sizeof(R) == 8)
+        val.value = static_cast<R>(unzigzag64(raw));
+      else
+        static_assert(sizeof(R) == 4 || sizeof(R) == 8,
+                      "SInt wrapper must be 4 or 8 bytes");
+      return true;
+    }
+  else if constexpr (std::is_same_v<M, Fixed32>
+                     || std::is_same_v<M, SFixed32>)
+    {
+      if (wt != 5)
+        return false;
+      std::uint32_t raw;
+      if (!cis.ReadLittleEndian32(&raw))
+        return false;
+      val.value = std::bit_cast<decltype(val.value)>(raw);
+      return true;
+    }
+  else if constexpr (std::is_same_v<M, Fixed64>
+                     || std::is_same_v<M, SFixed64>)
+    {
+      if (wt != 1)
+        return false;
+      std::uint64_t raw;
+      if (!cis.ReadLittleEndian64(&raw))
+        return false;
+      val.value = std::bit_cast<decltype(val.value)>(raw);
+      return true;
+    }
   else if constexpr (is_vector_v<M>)
     {
       using U = typename M::value_type;
-      if constexpr (is_numeric_v<U>)
+      if constexpr (is_packable_v<U>)
         {
           // packed
           if (wt != 2)

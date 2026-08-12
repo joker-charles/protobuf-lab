@@ -2,6 +2,12 @@ syntax = "proto3";
 
 package test;
 
+enum Color {
+  RED = 0;
+  GREEN = 1;
+  BLUE = 2;
+}
+
 message Address {
   string city = 1;
   int64 zip = 2;
@@ -14,4 +20,15 @@ message Person {
   double score = 4;
   Address home = 5;
   string nick = 6;
+  Color color = 7;
+  repeated Color palette = 8;
+  bytes blob = 9;
+  sint32 delta = 10;
+  sint64 big = 11;
+  fixed32 fx32 = 12;
+  sfixed64 sfx64 = 13;
+  repeated sint64 samples = 14;
+  repeated fixed32 hashes = 15;
+  repeated bool flags = 16;
+  repeated string tags = 17;
 }
