@@ -5,6 +5,7 @@
 // text format, proto2) is skipped.
 #include "test_messages.hpp"
 #include "text_format.hpp"
+#include "json.hpp"
 
 #include "conformance.pb.h"
 
@@ -93,9 +94,59 @@ int main()
                   rpb::text_format_print(out, msg);
                   resp.set_text_payload(out);
                 }
+              else if (req.requested_output_format() == conformance::JSON)
+                {
+                  std::string out;
+                  if (rpb::json_serialize(out, msg))
+                    resp.set_json_payload(out);
+                  else
+                    resp.set_serialize_error(
+                        "well-known type out of range for JSON");
+                }
               else
-                resp.set_skipped("JSON output not implemented yet");
+                resp.set_skipped("unsupported output format");
             }
+        }
+      else if (req.test_category() == conformance::JSON_TEST
+               || req.test_category()
+                      == conformance::JSON_IGNORE_UNKNOWN_PARSING_TEST)
+        {
+          tmm::TestAllTypesProto3 msg;
+          bool ok;
+          if (!req.json_payload().empty())
+            ok = rpb::json_parse(req.json_payload(), msg);
+          else if (!req.protobuf_payload().empty())
+            ok = rpb::parse(req.protobuf_payload(), msg);
+          else
+            ok = false;
+          if (!ok)
+            {
+              resp.set_parse_error("invalid JSON/protobuf input");
+            }
+          else if (req.requested_output_format() == conformance::PROTOBUF)
+            {
+              std::string out;
+              rpb::serialize(out, msg);
+              resp.set_protobuf_payload(out);
+            }
+          else if (req.requested_output_format() == conformance::JSON)
+            {
+              std::string out;
+              if (rpb::json_serialize(out, msg))
+                resp.set_json_payload(out);
+              else
+                resp.set_serialize_error(
+                    "well-known type out of range for JSON");
+            }
+          else if (req.requested_output_format()
+                   == conformance::TEXT_FORMAT)
+            {
+              std::string out;
+              rpb::text_format_print(out, msg);
+              resp.set_text_payload(out);
+            }
+          else
+            resp.set_skipped("unsupported output format");
         }
       else if (req.test_category() == conformance::TEXT_FORMAT_TEST)
         {
@@ -123,12 +174,21 @@ int main()
               rpb::text_format_print(out, msg);
               resp.set_text_payload(out);
             }
+          else if (req.requested_output_format() == conformance::JSON)
+            {
+              std::string out;
+              if (rpb::json_serialize(out, msg))
+                resp.set_json_payload(out);
+              else
+                resp.set_serialize_error(
+                    "well-known type out of range for JSON");
+            }
           else
             resp.set_skipped("unsupported output format");
         }
       else
         {
-          resp.set_skipped("JSON and other categories not implemented yet");
+          resp.set_skipped("other test categories not implemented yet");
         }
       std::string resp_bytes;
       resp.SerializeToString(&resp_bytes);

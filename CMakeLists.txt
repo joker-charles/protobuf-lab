@@ -87,6 +87,10 @@ reflect_compile(reflect_proto)
 add_executable(reflect_proto_tt src/main_tt.cpp)
 reflect_compile(reflect_proto_tt)
 
+add_executable(json_selftest src/json_selftest.cpp)
+reflect_compile(json_selftest)
+target_include_directories(json_selftest PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+
 # --- conformance testee ------------------------------------------------
 set(CONF_GEN ${CMAKE_CURRENT_BINARY_DIR}/gen_conf)
 file(MAKE_DIRECTORY ${CONF_GEN})
@@ -148,6 +152,7 @@ include(CTest)
 if(BUILD_TESTING)
   add_test(NAME selftest COMMAND reflect_proto --test)
   add_test(NAME selftest_tt COMMAND reflect_proto_tt --test)
+  add_test(NAME json_selftest COMMAND json_selftest)
   add_test(NAME interop
            COMMAND sh ${CMAKE_CURRENT_SOURCE_DIR}/tests/interop.sh
                    $<TARGET_FILE:reflect_proto> $<TARGET_FILE:ref>)
