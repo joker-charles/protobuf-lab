@@ -157,6 +157,30 @@ static tmm::TestAllTypesProto3 make_fixture()
   p.optional_bytes_wrapper =
       std::make_unique<tmm::BytesValue>(std::string("\x09", 1));
 
+  // Repeated wrappers (211-219).  Each pair includes a default-valued
+  // wrapper: presence semantics mean the empty message still emits
+  // (tag + zero length), exactly like protoc.
+  p.repeated_bool_wrapper = {{true}, {false}};
+  p.repeated_int32_wrapper = {{-32}, {0}};
+  p.repeated_int64_wrapper = {{-64}, {0}};
+  p.repeated_uint32_wrapper = {{32}, {0}};
+  p.repeated_uint64_wrapper = {{64}, {0}};
+  p.repeated_float_wrapper = {{1.5f}, {0.0f}};
+  p.repeated_double_wrapper = {{-2.5}, {0.0}};
+  p.repeated_string_wrapper = {{"w1"}, {""}};
+  p.repeated_bytes_wrapper = {{std::string("\x09", 1)}, {""}};
+
+  // Singular well-known types (301/302/303/305).
+  p.optional_duration = std::make_unique<tmm::Duration>(5, 6);
+  p.optional_timestamp =
+      std::make_unique<tmm::Timestamp>(1700000000LL, 123456789);
+  p.optional_field_mask = std::make_unique<tmm::FieldMask>();
+  p.optional_field_mask->paths = {"a.b", "c.d.e"};
+  p.optional_any = std::make_unique<tmm::Any>();
+  p.optional_any->type_url =
+      "type.googleapis.com/protobuf_test_messages.proto3.TestAllTypesProto3";
+  p.optional_any->value = std::string("\x08\x96\x01", 3);
+
   // Well-known types: Struct / Value / ListValue (mutual recursion broken
   // by unique_ptr oneof alternatives).  Maps stay single-entry: protobuf
   // Map serialization order is unspecified (hash order), ours is sorted.
@@ -176,6 +200,34 @@ static tmm::TestAllTypesProto3 make_fixture()
   sv.fields["a"].kind = std::make_unique<tmm::StructValue>();
   std::get<5>(sv.fields["a"].kind)->fields["x"].kind = true;
   p.repeated_struct.push_back(std::move(sv));
+
+  // Repeated well-known types (311/312/313/315).
+  p.repeated_duration = {{tmm::Duration{1, 2}, tmm::Duration{-3, -4}}};
+  p.repeated_timestamp = {{tmm::Timestamp{1000, 1}, tmm::Timestamp{2000, 2}}};
+  p.repeated_fieldmask = {
+      {tmm::FieldMask{{"x"}}, tmm::FieldMask{{"y", "z"}}}};
+  p.repeated_any = {{tmm::Any{"t1", std::string("\x01", 1)},
+                     tmm::Any{"t2", std::string("\x02\x03", 2)}}};
+
+  // Field-name convention probes (401-418).
+  p.fieldname1 = 1;
+  p.field_name2 = 2;
+  p._field_name3 = 3;
+  p.field__name4_ = 4;
+  p.field0name5 = 5;
+  p.field_0_name6 = 6;
+  p.fieldName7 = 7;
+  p.FieldName8 = 8;
+  p.field_Name9 = 9;
+  p.Field_Name10 = 10;
+  p.FIELD_NAME11 = 11;
+  p.FIELD_name12 = 12;
+  p.__field_name13 = 13;
+  p.__Field_name14 = 14;
+  p.field__name15 = 15;
+  p.field__Name16 = 16;
+  p.field_name17__ = 17;
+  p.Field_name18__ = 18;
 
   return p;
 }

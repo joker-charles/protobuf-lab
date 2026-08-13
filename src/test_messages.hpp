@@ -7,10 +7,10 @@
 // of a hand-rolled one.  Differential fixture lives in main_tt.cpp /
 // tests/ref_main_tt.cc (kept in sync).
 //
-// Deliberately omitted (wire-wise redundant): repeated wrappers (211-219),
-// Duration/Timestamp/FieldMask/Any (301-315), fieldname* (401-418).
-// All omitted fields stay unset in the shared fixture, so protobuf omits
-// them from the wire bytes and they never reach our parser.
+// Complete mirror: the full official schema is covered (scalars, enums,
+// messages, oneof, wrappers 201-219, WKTs 301-317/324, fieldname*
+// 401-418).  The shared fixture sets every field to a non-default value
+// so protobuf emits the full wire set and interop_tt compares byte-for-byte.
 
 #pragma once
 
@@ -112,6 +112,37 @@ struct BytesValue
 {
   [[=rpb::field_no<1>{}]] std::string value;
   bool operator==(BytesValue const &) const = default;
+};
+
+// google.protobuf.Duration: seconds + nanos.
+struct Duration
+{
+  [[=rpb::field_no<1>{}]] std::int64_t seconds;
+  [[=rpb::field_no<2>{}]] std::int32_t nanos;
+  bool operator==(Duration const &) const = default;
+};
+
+// google.protobuf.Timestamp: seconds + nanos.
+struct Timestamp
+{
+  [[=rpb::field_no<1>{}]] std::int64_t seconds;
+  [[=rpb::field_no<2>{}]] std::int32_t nanos;
+  bool operator==(Timestamp const &) const = default;
+};
+
+// google.protobuf.FieldMask: repeated paths.
+struct FieldMask
+{
+  [[=rpb::field_no<1>{}]] std::vector<std::string> paths;
+  bool operator==(FieldMask const &) const = default;
+};
+
+// google.protobuf.Any: type_url + value (raw bytes).
+struct Any
+{
+  [[=rpb::field_no<1>{}]] std::string type_url;
+  [[=rpb::field_no<2>{}]] std::string value;
+  bool operator==(Any const &) const = default;
 };
 
 struct StructValue;
@@ -286,13 +317,56 @@ struct TestAllTypesProto3
   [[=rpb::field_no<208>{}]] std::unique_ptr<StringValue> optional_string_wrapper;
   [[=rpb::field_no<209>{}]] std::unique_ptr<BytesValue> optional_bytes_wrapper;
 
+  // Repeated wrappers (211-219).
+  [[=rpb::field_no<211>{}]] std::vector<BoolValue> repeated_bool_wrapper;
+  [[=rpb::field_no<212>{}]] std::vector<Int32Value> repeated_int32_wrapper;
+  [[=rpb::field_no<213>{}]] std::vector<Int64Value> repeated_int64_wrapper;
+  [[=rpb::field_no<214>{}]] std::vector<UInt32Value> repeated_uint32_wrapper;
+  [[=rpb::field_no<215>{}]] std::vector<UInt64Value> repeated_uint64_wrapper;
+  [[=rpb::field_no<216>{}]] std::vector<FloatValue> repeated_float_wrapper;
+  [[=rpb::field_no<217>{}]] std::vector<DoubleValue> repeated_double_wrapper;
+  [[=rpb::field_no<218>{}]] std::vector<StringValue> repeated_string_wrapper;
+  [[=rpb::field_no<219>{}]] std::vector<BytesValue> repeated_bytes_wrapper;
+
+  // Singular well-known types (301-307): unique_ptr for real presence.
+  [[=rpb::field_no<301>{}]] std::unique_ptr<Duration> optional_duration;
+  [[=rpb::field_no<302>{}]] std::unique_ptr<Timestamp> optional_timestamp;
+  [[=rpb::field_no<303>{}]] std::unique_ptr<FieldMask> optional_field_mask;
+  [[=rpb::field_no<305>{}]] std::unique_ptr<Any> optional_any;
+
   // Well-known types with mutual recursion (Struct/Value/ListValue).
   [[=rpb::field_no<304>{}]] std::unique_ptr<StructValue> optional_struct;
   [[=rpb::field_no<306>{}]] std::unique_ptr<Value> optional_value;
   [[=rpb::field_no<307>{}]] NullValue optional_null_value;
+
+  // Repeated well-known types (311-317, 324).
+  [[=rpb::field_no<311>{}]] std::vector<Duration> repeated_duration;
+  [[=rpb::field_no<312>{}]] std::vector<Timestamp> repeated_timestamp;
+  [[=rpb::field_no<313>{}]] std::vector<FieldMask> repeated_fieldmask;
+  [[=rpb::field_no<315>{}]] std::vector<Any> repeated_any;
   [[=rpb::field_no<316>{}]] std::vector<Value> repeated_value;
   [[=rpb::field_no<317>{}]] std::vector<ListValue> repeated_list_value;
   [[=rpb::field_no<324>{}]] std::vector<StructValue> repeated_struct;
+
+  // Field-name-to-JSON-name convention probes (401-418).
+  [[=rpb::field_no<401>{}]] std::int32_t fieldname1;
+  [[=rpb::field_no<402>{}]] std::int32_t field_name2;
+  [[=rpb::field_no<403>{}]] std::int32_t _field_name3;
+  [[=rpb::field_no<404>{}]] std::int32_t field__name4_;
+  [[=rpb::field_no<405>{}]] std::int32_t field0name5;
+  [[=rpb::field_no<406>{}]] std::int32_t field_0_name6;
+  [[=rpb::field_no<407>{}]] std::int32_t fieldName7;
+  [[=rpb::field_no<408>{}]] std::int32_t FieldName8;
+  [[=rpb::field_no<409>{}]] std::int32_t field_Name9;
+  [[=rpb::field_no<410>{}]] std::int32_t Field_Name10;
+  [[=rpb::field_no<411>{}]] std::int32_t FIELD_NAME11;
+  [[=rpb::field_no<412>{}]] std::int32_t FIELD_name12;
+  [[=rpb::field_no<413>{}]] std::int32_t __field_name13;
+  [[=rpb::field_no<414>{}]] std::int32_t __Field_name14;
+  [[=rpb::field_no<415>{}]] std::int32_t field__name15;
+  [[=rpb::field_no<416>{}]] std::int32_t field__Name16;
+  [[=rpb::field_no<417>{}]] std::int32_t field_name17__;
+  [[=rpb::field_no<418>{}]] std::int32_t Field_name18__;
 
   rpb::UnknownFields unknown;  // conformance: unknown fields preserved
 

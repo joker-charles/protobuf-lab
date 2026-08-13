@@ -1,7 +1,8 @@
 // Protobuf-side fixture for the TestAllTypesProto3 differential interop.
-// Values must stay in sync with src/main_tt.cpp (our side).  Omitted fields
-// in the mirror (oneof_string, Struct/Value/ListValue, etc.) stay unset
-// here too, so protobuf never emits them.
+// Values must stay in sync with src/main_tt.cpp (our side).  Every field
+// of the official schema is set to a non-default value (or an empty
+// wrapper message, to exercise message presence), so protobuf emits the
+// full wire set and interop_tt compares byte-for-byte.
 #include <cstdio>
 #include <cstdlib>
 #include <string>
@@ -179,6 +180,38 @@ static void make_fixture(m::TestAllTypesProto3 &p)
   p.mutable_optional_string_wrapper()->set_value("w");
   p.mutable_optional_bytes_wrapper()->set_value("\x09", 1);
 
+  // Repeated wrappers (211-219); the second element of each pair stays
+  // default-valued, so the empty wrapper message emits as tag+len 0.
+  p.add_repeated_bool_wrapper()->set_value(true);
+  p.add_repeated_bool_wrapper();
+  p.add_repeated_int32_wrapper()->set_value(-32);
+  p.add_repeated_int32_wrapper();
+  p.add_repeated_int64_wrapper()->set_value(-64);
+  p.add_repeated_int64_wrapper();
+  p.add_repeated_uint32_wrapper()->set_value(32);
+  p.add_repeated_uint32_wrapper();
+  p.add_repeated_uint64_wrapper()->set_value(64);
+  p.add_repeated_uint64_wrapper();
+  p.add_repeated_float_wrapper()->set_value(1.5f);
+  p.add_repeated_float_wrapper();
+  p.add_repeated_double_wrapper()->set_value(-2.5);
+  p.add_repeated_double_wrapper();
+  p.add_repeated_string_wrapper()->set_value("w1");
+  p.add_repeated_string_wrapper();
+  p.add_repeated_bytes_wrapper()->set_value("\x09", 1);
+  p.add_repeated_bytes_wrapper();
+
+  // Singular well-known types (301/302/303/305).
+  p.mutable_optional_duration()->set_seconds(5);
+  p.mutable_optional_duration()->set_nanos(6);
+  p.mutable_optional_timestamp()->set_seconds(1700000000LL);
+  p.mutable_optional_timestamp()->set_nanos(123456789);
+  p.mutable_optional_field_mask()->add_paths("a.b");
+  p.mutable_optional_field_mask()->add_paths("c.d.e");
+  p.mutable_optional_any()->set_type_url(
+      "type.googleapis.com/protobuf_test_messages.proto3.TestAllTypesProto3");
+  p.mutable_optional_any()->set_value("\x08\x96\x01", 3);
+
   auto &os = *p.mutable_optional_struct();
   (*os.mutable_fields())["k"].set_number_value(3.5);
   p.mutable_optional_value()->set_string_value("str");
@@ -188,6 +221,50 @@ static void make_fixture(m::TestAllTypesProto3 &p)
   (*(*p.add_repeated_struct()->mutable_fields())["a"]
         .mutable_struct_value()
         ->mutable_fields())["x"].set_bool_value(true);
+
+  // Repeated well-known types (311/312/313/315).
+  auto *d0 = p.add_repeated_duration();
+  d0->set_seconds(1);
+  d0->set_nanos(2);
+  auto *d1 = p.add_repeated_duration();
+  d1->set_seconds(-3);
+  d1->set_nanos(-4);
+  auto *t0 = p.add_repeated_timestamp();
+  t0->set_seconds(1000);
+  t0->set_nanos(1);
+  auto *t1 = p.add_repeated_timestamp();
+  t1->set_seconds(2000);
+  t1->set_nanos(2);
+  p.add_repeated_fieldmask()->add_paths("x");
+  auto *fm = p.add_repeated_fieldmask();
+  fm->add_paths("y");
+  fm->add_paths("z");
+  auto *a0 = p.add_repeated_any();
+  a0->set_type_url("t1");
+  a0->set_value("\x01", 1);
+  auto *a1 = p.add_repeated_any();
+  a1->set_type_url("t2");
+  a1->set_value("\x02\x03", 2);
+
+  // Field-name convention probes (401-418).
+  p.set_fieldname1(1);
+  p.set_field_name2(2);
+  p.set__field_name3(3);
+  p.set_field__name4_(4);
+  p.set_field0name5(5);
+  p.set_field_0_name6(6);
+  p.set_fieldname7(7);
+  p.set_fieldname8(8);
+  p.set_field_name9(9);
+  p.set_field_name10(10);
+  p.set_field_name11(11);
+  p.set_field_name12(12);
+  p.set___field_name13(13);
+  p.set___field_name14(14);
+  p.set_field__name15(15);
+  p.set_field__name16(16);
+  p.set_field_name17__(17);
+  p.set_field_name18__(18);
 }
 
 int main()
