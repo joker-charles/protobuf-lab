@@ -44,6 +44,8 @@ enum class AliasedEnum : std::int32_t
   ALIAS_BAR = 1,
   ALIAS_BAZ = 2,
   MOO = 2,
+  moo = 2,
+  bAz = 2,
 };
 enum class NullValue : std::int32_t
 {
