@@ -110,7 +110,7 @@ struct StringValue
 };
 struct BytesValue
 {
-  [[=rpb::field_no<1>{}]] std::string value;
+  [[=rpb::field_no<1>{}, =rpb::bytes_type{}]] std::string value;
   bool operator==(BytesValue const &) const = default;
 };
 
@@ -141,7 +141,7 @@ struct FieldMask
 struct Any
 {
   [[=rpb::field_no<1>{}]] std::string type_url;
-  [[=rpb::field_no<2>{}]] std::string value;
+  [[=rpb::field_no<2>{}, =rpb::bytes_type{}]] std::string value;
   bool operator==(Any const &) const = default;
 };
 
@@ -201,7 +201,7 @@ struct TestAllTypesProto3
   [[=rpb::field_no<12>{}]] double optional_double;
   [[=rpb::field_no<13>{}]] bool optional_bool;
   [[=rpb::field_no<14>{}]] std::string optional_string;
-  [[=rpb::field_no<15>{}]] std::string optional_bytes;
+  [[=rpb::field_no<15>{}, =rpb::bytes_type{}]] std::string optional_bytes;
 
   // Singular message fields use unique_ptr: proto3 message fields have
   // real presence, so "set but empty" (e.g. conformance MESSAGE[0]) must
@@ -231,7 +231,8 @@ struct TestAllTypesProto3
   [[=rpb::field_no<42>{}]] std::vector<double> repeated_double;
   [[=rpb::field_no<43>{}]] std::vector<bool> repeated_bool;
   [[=rpb::field_no<44>{}]] std::vector<std::string> repeated_string;
-  [[=rpb::field_no<45>{}]] std::vector<std::string> repeated_bytes;
+  [[=rpb::field_no<45>{}, =rpb::bytes_type{}]]
+  std::vector<std::string> repeated_bytes;
 
   [[=rpb::field_no<48>{}]] std::vector<NestedMessage> repeated_nested_message;
   [[=rpb::field_no<49>{}]] std::vector<ForeignMessage> repeated_foreign_message;
@@ -258,7 +259,8 @@ struct TestAllTypesProto3
   [[=rpb::field_no<67>{}]] std::map<std::int32_t, double> map_int32_double;
   [[=rpb::field_no<68>{}]] std::map<bool, bool> map_bool_bool;
   [[=rpb::field_no<69>{}]] std::map<std::string, std::string> map_string_string;
-  [[=rpb::field_no<70>{}]] std::map<std::string, std::string> map_string_bytes;
+  [[=rpb::field_no<70>{}, =rpb::bytes_type{}]]
+  std::map<std::string, std::string> map_string_bytes;
   [[=rpb::field_no<71>{}]] std::map<std::string, NestedMessage> map_string_nested_message;
   [[=rpb::field_no<72>{}]] std::map<std::string, ForeignMessage> map_string_foreign_message;
   [[=rpb::field_no<73>{}]] std::map<std::string, NestedEnum> map_string_nested_enum;
@@ -297,11 +299,18 @@ struct TestAllTypesProto3
   [[=rpb::field_no<102>{}]] std::vector<rpb::Unpacked<NestedEnum>> unpacked_nested_enum;
 
   // Oneof (111-120).  oneof_bytes (114) is rpb::Bytes so the variant can
-  // hold both string and bytes alternatives.
+  // hold both string and bytes alternatives.  Per-alternative proto field
+  // names ride on rpb::name annotations (same order as field_no) for the
+  // text-format/JSON layers.
   [[=rpb::field_no<111>{}, =rpb::field_no<112>{}, =rpb::field_no<114>{},
     =rpb::field_no<113>{}, =rpb::field_no<115>{}, =rpb::field_no<116>{},
     =rpb::field_no<117>{}, =rpb::field_no<118>{}, =rpb::field_no<119>{},
-    =rpb::field_no<120>{}]]
+    =rpb::field_no<120>{},
+    =rpb::name<"oneof_uint32">{}, =rpb::name<"oneof_nested_message">{},
+    =rpb::name<"oneof_bytes">{}, =rpb::name<"oneof_string">{},
+    =rpb::name<"oneof_bool">{}, =rpb::name<"oneof_uint64">{},
+    =rpb::name<"oneof_float">{}, =rpb::name<"oneof_double">{},
+    =rpb::name<"oneof_enum">{}, =rpb::name<"oneof_null_value">{}]]
   rpb::OneOf<std::uint32_t, NestedMessage, rpb::Bytes, std::string, bool,
              std::uint64_t, float, double, NestedEnum, NullValue>
       oneof_field;

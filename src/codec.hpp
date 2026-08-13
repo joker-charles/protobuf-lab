@@ -125,6 +125,91 @@ template <std::uint32_t N> struct is_field_no<field_no<N>> : std::true_type {};
 template <typename T> inline constexpr bool is_field_no_v =
     is_field_no<T>::value;
 
+// --- field-name annotations (text format / JSON) -----------------------
+// The wire codec only needs field numbers, so the C++ member identifier
+// doubles as the proto field name for ordinary members.  OneOf members
+// collapse several proto fields into one std::variant member, so each
+// alternative's proto field name is declared explicitly with
+// [[=rpb::name<"...">{}]] (one per alternative, in the same order as the
+// field_no annotations).  Also usable on ordinary members whose C++
+// identifier differs from the proto field name.
+
+template <std::size_t N>
+struct fixed_string
+{
+  char data[N]{};
+  constexpr fixed_string(char const (&s)[N])
+  {
+    for (std::size_t i = 0; i < N; ++i)
+      data[i] = s[i];
+  }
+  constexpr std::string_view view() const { return {data, N - 1}; }
+};
+template <std::size_t N>
+fixed_string(char const (&)[N]) -> fixed_string<N>;
+
+template <fixed_string S>
+struct name
+{
+  static constexpr std::string_view value = S.view();
+};
+
+template <typename T> struct is_name : std::false_type {};
+template <fixed_string S> struct is_name<name<S>> : std::true_type {};
+template <typename T> inline constexpr bool is_name_v = is_name<T>::value;
+
+// Marker annotation [[=rpb::bytes_type{}]]: a std::string member that is a
+// protobuf `bytes` field rather than `string` (the wire codec treats both
+// as length-delimited, but text format / JSON need to know: bytes fields
+// skip UTF-8 validation and serialize as base64 in JSON).
+struct bytes_type {};
+template <typename T> struct is_bytes_ann : std::false_type {};
+template <> struct is_bytes_ann<bytes_type> : std::true_type {};
+template <typename T> inline constexpr bool is_bytes_ann_v =
+    is_bytes_ann<T>::value;
+
+template <meta::info M>
+consteval bool member_is_bytes_ann()
+{
+  bool is_bytes = false;
+  template for (constexpr auto ann :
+                std::define_static_array(meta::annotations_of(M)))
+    {
+      using A = std::remove_cvref_t<typename [: meta::type_of(ann) :]>;
+      if constexpr (is_bytes_ann_v<A>)
+        is_bytes = true;
+    }
+  return is_bytes;
+}
+
+// Proto field name of member `r` alternative `alt` (alt == 0 for ordinary
+// members, else the std::variant index): the C++ identifier for ordinary
+// members, the alt-th `name` annotation for OneOf alternatives.
+template <meta::info M, std::size_t Alt>
+consteval std::string_view member_alt_name()
+{
+  using MT = typename [: meta::type_of(M) :];
+  if constexpr (Alt == 0)
+    return meta::identifier_of(M);
+  else
+    {
+      std::string_view result{};
+      std::size_t n = 0;
+      template for (constexpr auto ann :
+                    std::define_static_array(meta::annotations_of(M)))
+        {
+          using A = std::remove_cvref_t<typename [: meta::type_of(ann) :]>;
+          if constexpr (is_name_v<A>)
+            {
+              if (n == Alt - 1)
+                result = A::value;
+              ++n;
+            }
+        }
+      return result;
+    }
+}
+
 // --- oneof -------------------------------------------------------------
 // OneOf<Ts...> = std::variant<std::monostate, Ts...>; monostate means the
 // oneof is unset.  Each alternative is a distinct protobuf field with its
