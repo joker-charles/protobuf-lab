@@ -408,6 +408,31 @@ static void test_depth_limit_roundtrip()
   RecursiveChoice q;
   check(rpb::parse(bytes, q) && q == deep,
         "depth-64 nested message roundtrip");
+
+  // 65 nested messages on the wire (built by hand; our own serializer
+  // would refuse to produce them) must be rejected gracefully.
+  std::string deep65;
+  deep65.push_back(static_cast<char>(0x08));  // innermost: field 1 varint
+  deep65.push_back(static_cast<char>(0x2A));  // value 42
+  for (int i = 1; i < 65; ++i)
+    {
+      std::string wrapped;
+      wrapped.push_back(static_cast<char>(0x12));  // field 2, length-delimited
+      std::size_t len = deep65.size();
+      do
+        {
+          unsigned char b = static_cast<unsigned char>(len & 0x7F);
+          len >>= 7;
+          if (len)
+            b |= 0x80;
+          wrapped.push_back(static_cast<char>(b));
+        }
+      while (len);
+      wrapped += deep65;
+      deep65 = std::move(wrapped);
+    }
+  RecursiveChoice r;
+  check(!rpb::parse(deep65, r), "depth-65 nested message rejected");
 }
 
 static void test_deep_copy()

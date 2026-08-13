@@ -261,15 +261,18 @@ reflection-generated getopt table, `#embed` prime tables, contracts, and
   alternatives show up as warnings only (not enforced): 14 cases, both
   encodings are legal, and `tests/conformance_failures.txt` documents them
   as evaluated-and-accepted while listing no actual failures.
-- Codec guards: parse sets `SetRecursionLimit(kMaxSerializeDepth)` (64) per
-  CodedInputStream, and `serialize()` keeps a thread_local depth counter
-  (`kMaxSerializeDepth` = 64) incremented at every recursive entry - all
-  nested messages recurse through `serialize()`, so one counter covers
-  map values / vector elements / unique_ptr / optional / plain struct
-  members.  Over-deep serialize trips a `contract_assert` and aborts
-  (documented asymmetry: parse returns false).  `optional<T>` message
-  members merge on repeated occurrences (scalar/string stay last-wins),
-  matching plain-member/oneof behavior.
+- Codec guards: `kMaxSerializeDepth` (64) bounds **cumulative** nesting on
+  both sides via thread_local counters (`serialize_depth_v`,
+  `parse_depth_v`) incremented at every recursive `serialize()`/`parse()`
+  entry - all nested messages recurse through those two functions, so one
+  counter covers map values / vector elements / unique_ptr / optional /
+  plain struct members.  Per-stream `SetRecursionLimit(...)` remains as
+  belt-and-suspenders, but note it resets per nested `parse()` call (each
+  level builds a fresh CodedInputStream), which is why the cumulative
+  counter exists.  Over-deep serialize trips a `contract_assert` and
+  aborts; over-deep parse returns false (documented asymmetry).
+  `optional<T>` message members merge on repeated occurrences
+  (scalar/string stay last-wins), matching plain-member/oneof behavior.
 - Benchmarks: `bench/bench.cpp` (target `bench`, not a ctest) compares the
   reflection codec against protoc-generated code on the same
   TestAllTypesProto3 fixture; timing uses only std::chrono.  On the current

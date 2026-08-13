@@ -82,6 +82,7 @@ namespace meta = std::meta;
 // handler (parse, by contrast, returns false) - documented asymmetry.
 inline constexpr std::size_t kMaxSerializeDepth = 64;
 inline thread_local std::size_t serialize_depth_v = 0;
+inline thread_local std::size_t parse_depth_v = 0;
 
 // Reusable per-thread scratch buffers for embedded-message / map-entry /
 // packed payloads.  Chunk building is strictly LIFO (nested messages
@@ -1379,6 +1380,19 @@ template <typename T>
 bool parse(std::string_view data, T &v)
 {
   check_layout<T>();
+  // Cumulative nesting guard.  Nested messages recurse through parse()
+  // and each level builds a fresh CodedInputStream, so a per-stream
+  // SetRecursionLimit would reset per level; the thread_local counter
+  // bounds the real recursion depth, mirroring serialize()'s guard.
+  // Unlike serialize(), over-depth input is rejected gracefully (false) -
+  // documented asymmetry.
+  if (parse_depth_v >= kMaxSerializeDepth)
+    return false;
+  ++parse_depth_v;
+  struct parse_depth_scope
+  {
+    ~parse_depth_scope() { --parse_depth_v; }
+  } depth_scope;
   google::protobuf::io::ArrayInputStream ais(data.data(),
                                              static_cast<int>(data.size()));
   google::protobuf::io::CodedInputStream cis(&ais);
