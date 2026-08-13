@@ -182,15 +182,58 @@ consteval bool member_is_bytes_ann()
   return is_bytes;
 }
 
+// Marker annotation [[=rpb::group_type{}]] on a message-typed member: the
+// field is a proto2 group and must be encoded with START_GROUP/END_GROUP
+// (wire types 3/4) instead of a length-delimited embedded message.  The
+// member's element type is an ordinary annotated message struct.
+struct group_type {};
+template <typename T> struct is_group_ann : std::false_type {};
+template <> struct is_group_ann<group_type> : std::true_type {};
+template <typename T> inline constexpr bool is_group_ann_v =
+    is_group_ann<T>::value;
+
+template <meta::info M>
+consteval bool member_is_group_ann()
+{
+  bool is_group = false;
+  template for (constexpr auto ann :
+                std::define_static_array(meta::annotations_of(M)))
+    {
+      using A = std::remove_cvref_t<typename [: meta::type_of(ann) :]>;
+      if constexpr (is_group_ann_v<A>)
+        is_group = true;
+    }
+  return is_group;
+}
+
 // Proto field name of member `r` alternative `alt` (alt == 0 for ordinary
-// members, else the std::variant index): the C++ identifier for ordinary
-// members, the alt-th `name` annotation for OneOf alternatives.
+// members, else the std::variant index): an explicit `name` annotation if
+// present (ordinary members may carry one, e.g. to give a proto2 group its
+// type name), else the C++ identifier for ordinary members; the alt-th
+// `name` annotation for OneOf alternatives.
+template <meta::info M>
+consteval std::string_view member_first_name()
+{
+  std::string_view result{};
+  template for (constexpr auto ann :
+                std::define_static_array(meta::annotations_of(M)))
+    {
+      using A = std::remove_cvref_t<typename [: meta::type_of(ann) :]>;
+      if constexpr (is_name_v<A>)
+        result = A::value;
+    }
+  return result;
+}
+
 template <meta::info M, std::size_t Alt>
 consteval std::string_view member_alt_name()
 {
   using MT = typename [: meta::type_of(M) :];
   if constexpr (Alt == 0)
-    return meta::identifier_of(M);
+    {
+      constexpr std::string_view first = member_first_name<M>();
+      return first.empty() ? meta::identifier_of(M) : first;
+    }
   else
     {
       std::string_view result{};
@@ -725,6 +768,9 @@ consteval void check_layout()
 // --- serialization ---
 
 template <typename T> void serialize(std::string &out, T const &v);
+template <typename T>
+void serialize_to_cos(google::protobuf::io::CodedOutputStream &cos,
+                      T const &v);
 
 template <typename U>
 void write_packed_element(google::protobuf::io::CodedOutputStream &cos,
@@ -929,8 +975,90 @@ void serialize_value(google::protobuf::io::CodedOutputStream &cos,
     }
 }
 
+// Helpers to extract the inner message of a group presence-member
+// (unique_ptr / optional / bare message) without relying on ``if constexpr``
+// discarding (GCC 16 does not discard false branches, see AGENTS.md).
+template <typename M> struct GroupInner
+{
+  using type = M;
+};
+template <typename T> struct GroupInner<std::unique_ptr<T>>
+{
+  using type = T;
+};
+template <typename T> struct GroupInner<std::optional<T>>
+{
+  using type = T;
+};
+// Read a const pointer to the group member's inner message.  Struct partial
+// specialization (rather than function overloading) is used because GCC 16
+// does not order the unique_ptr/optional function-template overloads above
+// the generic ``M const&`` overload reliably.
+template <typename M> struct GroupPtr
+{
+  static M const *get(M const &v)
+  {
+    return &v;
+  }
+};
+template <typename T> struct GroupPtr<std::unique_ptr<T>>
+{
+  static T const *get(std::unique_ptr<T> const &p)
+  {
+    return p.get();
+  }
+};
+template <typename T> struct GroupPtr<std::optional<T>>
+{
+  static T const *get(std::optional<T> const &o)
+  {
+    return o ? &*o : nullptr;
+  }
+};
+// Mutable variant (parse): allocates the presence-holding member as needed.
+template <typename M> struct GroupPtrMut
+{
+  static M *get(M &v)
+  {
+    return &v;
+  }
+};
+template <typename T> struct GroupPtrMut<std::unique_ptr<T>>
+{
+  static T *get(std::unique_ptr<T> &p)
+  {
+    if (!p)
+      p = std::make_unique<T>();
+    return p.get();
+  }
+};
+template <typename T> struct GroupPtrMut<std::optional<T>>
+{
+  static T *get(std::optional<T> &o)
+  {
+    if (!o)
+      o.emplace();
+    return &*o;
+  }
+};
+template <typename M> M *member_inner_ptr(M &v)
+{
+  return &v;
+}
+template <typename T> typename T::element_type *member_inner_ptr(std::unique_ptr<T> &p)
+{
+  return p.get();
+}
+template <typename T> T *member_inner_ptr(std::optional<T> &o)
+{
+  return o ? &*o : nullptr;
+}
+
+// Ordinary (non-group) member serialize.
 template <typename T, std::uint32_t FNO, std::size_t MI, std::size_t AI>
-void serialize_entry(google::protobuf::io::CodedOutputStream &cos, T const &v)
+void serialize_entry_group(std::false_type,
+                           google::protobuf::io::CodedOutputStream &cos,
+                           T const &v)
 {
   constexpr meta::info r = member_v<T, MI>;
   using M = typename [: meta::type_of(r) :];
@@ -961,14 +1089,36 @@ void serialize_entry(google::protobuf::io::CodedOutputStream &cos, T const &v)
     }
 }
 
-template <typename T>
-void serialize(std::string &out, T const &v)
+// proto2 group member (wire types 3/4).
+template <typename T, std::uint32_t FNO, std::size_t MI, std::size_t AI>
+void serialize_entry_group(std::true_type,
+                           google::protobuf::io::CodedOutputStream &cos,
+                           T const &v)
 {
-  check_layout<T>();
-  ++serialize_depth_v;
-  contract_assert(serialize_depth_v <= kMaxSerializeDepth);
-  google::protobuf::io::StringOutputStream sos(&out);
-  google::protobuf::io::CodedOutputStream cos(&sos);
+  constexpr meta::info r = member_v<T, MI>;
+  using M = typename [: meta::type_of(r) :];
+  // Emit START_GROUP only when the presence-holding member is set.  The
+  // group body is the member's inner message struct, serialized directly
+  // (its own members carry their field numbers).
+  using Inner = typename GroupInner<M>::type;
+  auto const *inner = GroupPtr<M>::get(v.[:r:]);
+  if (!inner)
+    return;
+  cos.WriteTag((FNO << 3) | 3);
+  serialize_to_cos(cos, *inner);
+  cos.WriteTag((FNO << 3) | 4);
+}
+
+template <typename T, std::uint32_t FNO, std::size_t MI, std::size_t AI>
+void serialize_entry(google::protobuf::io::CodedOutputStream &cos, T const &v)
+{
+  serialize_entry_group<T, FNO, MI, AI>(
+      std::bool_constant<member_is_group_ann<member_v<T, MI>>()>{}, cos, v);
+}
+
+template <typename T>
+void serialize_to_cos(google::protobuf::io::CodedOutputStream &cos, T const &v)
+{
   template for (constexpr auto e : std::define_static_array(field_table<T>()))
     {
       serialize_entry<T, e.fieldno, e.member, e.alt>(cos, v);
@@ -979,6 +1129,17 @@ void serialize(std::string &out, T const &v)
       serialize_value(cos, 0,
                       v.[: member_v<T, unknown_member_index_v<T>> :]);
     }
+}
+
+template <typename T>
+void serialize(std::string &out, T const &v)
+{
+  check_layout<T>();
+  ++serialize_depth_v;
+  contract_assert(serialize_depth_v <= kMaxSerializeDepth);
+  google::protobuf::io::StringOutputStream sos(&out);
+  google::protobuf::io::CodedOutputStream cos(&sos);
+  serialize_to_cos(cos, v);
   --serialize_depth_v;
 }
 
@@ -1075,7 +1236,11 @@ bool read_message_payload(google::protobuf::io::CodedInputStream &cis,
 
 template <typename M>
 bool parse_value(google::protobuf::io::CodedInputStream &cis, std::uint32_t wt,
-                 M &val)
+                 M &val, std::uint32_t fieldno = 0);
+
+template <typename M>
+bool parse_value(google::protobuf::io::CodedInputStream &cis, std::uint32_t wt,
+                 M &val, std::uint32_t fieldno)
 {
   if constexpr (std::is_same_v<M, std::string>)
     {
@@ -1334,6 +1499,12 @@ bool parse_oneof_alt(google::protobuf::io::CodedInputStream &cis,
 // whether it is an ordinary member (alt == 0) or a OneOf alternative
 // (alt == variant index 1..N).
 
+// Parse a proto2 group body (fields until the matching END_GROUP) into an
+// inner message struct; defined after skip_field / capture_unknown_field.
+template <typename Inner>
+bool parse_group_body(google::protobuf::io::CodedInputStream &cis,
+                      std::uint32_t fieldno, Inner &out);
+
 template <typename T, std::size_t R>
 bool parse_table_row(google::protobuf::io::CodedInputStream &cis,
                      std::uint32_t fieldno, std::uint32_t wt, T &v)
@@ -1341,8 +1512,17 @@ bool parse_table_row(google::protobuf::io::CodedInputStream &cis,
   constexpr auto row = field_table<T>()[R];
   constexpr meta::info r = member_v<T, row.member>;
   using M = typename [: meta::type_of(r) :];
-  if constexpr (row.alt == 0)
-    return parse_value(cis, wt, v.[:r:]);
+  if constexpr (member_is_group_ann<r>())
+    {
+      // proto2 group: the tag must be a START_GROUP (wire type 3); parse
+      // the body into the member's inner message.
+      if (wt != 3)
+        return false;
+      return parse_group_body(cis, fieldno,
+                              *GroupPtrMut<M>::get(v.[:r:]));
+    }
+  else if constexpr (row.alt == 0)
+    return parse_value(cis, wt, v.[:r:], fieldno);
   else
     return parse_oneof_alt<T, row.member, row.alt - 1>(cis, fieldno, wt, v);
 }
@@ -1458,6 +1638,35 @@ inline bool skip_field(google::protobuf::io::CodedInputStream &cis,
       return cis.Skip(4);
     default:
       return false;
+    }
+}
+
+template <typename Inner>
+bool parse_group_body(google::protobuf::io::CodedInputStream &cis,
+                      std::uint32_t fieldno, Inner &out)
+{
+  for (;;)
+    {
+      std::uint32_t tag = cis.ReadTag();
+      if (tag == 0)
+        return false;  // truncated group
+      std::uint32_t fn = tag >> 3;
+      std::uint32_t w = tag & 7;
+      if (w == 4)
+        return fn == fieldno;  // end group must match the start group tag
+      if (!parse_table_range<Inner, 0, field_table_size_v<Inner>>(
+              cis, fn, w, out))
+        {
+          if constexpr (has_unknown_fields_v<Inner>)
+            {
+              if (capture_unknown_field(
+                      cis, fn, w,
+                      out.[: member_v<Inner, unknown_member_index_v<Inner>> :]))
+                continue;
+            }
+          if (!skip_field(cis, fn, w))
+            return false;
+        }
     }
 }
 

@@ -387,4 +387,233 @@ struct TestAllTypesProto3
   }
 };
 
+// --- proto2 test messages (test_messages_proto2.proto) ----------------
+// proto2 semantics: optional scalar members carry real presence, so they
+// are represented as std::optional<T> (set -> serialize even if equal to
+// default; unset -> omitted).  Message fields use unique_ptr.
+
+struct NestedMessage2;
+struct TestAllTypesProto2;
+
+struct NestedMessage2
+{
+  [[=rpb::field_no<1>{}]] std::optional<std::int32_t> a;
+  [[=rpb::field_no<2>{}]] std::unique_ptr<TestAllTypesProto2> corecursive;
+  bool operator==(NestedMessage2 const &o) const
+  {
+    return rpb::deep_equal(*this, o);
+  }
+};
+struct ForeignMessageProto2
+{
+  [[=rpb::field_no<1>{}]] std::optional<std::int32_t> c;
+  bool operator==(ForeignMessageProto2 const &) const = default;
+};
+enum class NestedEnum2 : std::int32_t
+{
+  FOO = 0,
+  BAR = 1,
+  BAZ = 2,
+  NEG = -1,
+};
+enum class ForeignEnumProto2 : std::int32_t
+{
+  FOREIGN_FOO = 0,
+  FOREIGN_BAR = 1,
+  FOREIGN_BAZ = 2,
+};
+
+struct TestAllTypesProto2
+{
+  // proto2 group Data { group_int32=202, group_uint32=203 } at field 201.
+  struct Data
+  {
+    [[=rpb::field_no<202>{}]] std::optional<std::int32_t> group_int32;
+    [[=rpb::field_no<203>{}]] std::optional<std::uint32_t> group_uint32;
+    bool operator==(Data const &o) const
+    {
+      return rpb::deep_equal(*this, o);
+    }
+  };
+
+  // Singular optional scalars (1-15) with explicit presence.
+  [[=rpb::field_no<1>{}]] std::optional<std::int32_t> optional_int32;
+  [[=rpb::field_no<2>{}]] std::optional<std::int64_t> optional_int64;
+  [[=rpb::field_no<3>{}]] std::optional<std::uint32_t> optional_uint32;
+  [[=rpb::field_no<4>{}]] std::optional<std::uint64_t> optional_uint64;
+  [[=rpb::field_no<5>{}]] std::optional<rpb::SInt<std::int32_t>> optional_sint32;
+  [[=rpb::field_no<6>{}]] std::optional<rpb::SInt<std::int64_t>> optional_sint64;
+  [[=rpb::field_no<7>{}]] std::optional<rpb::Fixed32> optional_fixed32;
+  [[=rpb::field_no<8>{}]] std::optional<rpb::Fixed64> optional_fixed64;
+  [[=rpb::field_no<9>{}]] std::optional<rpb::SFixed32> optional_sfixed32;
+  [[=rpb::field_no<10>{}]] std::optional<rpb::SFixed64> optional_sfixed64;
+  [[=rpb::field_no<11>{}]] std::optional<float> optional_float;
+  [[=rpb::field_no<12>{}]] std::optional<double> optional_double;
+  [[=rpb::field_no<13>{}]] std::optional<bool> optional_bool;
+  [[=rpb::field_no<14>{}]] std::optional<std::string> optional_string;
+  [[=rpb::field_no<15>{}, =rpb::bytes_type{}]] std::optional<std::string>
+      optional_bytes;
+
+  // Optional message fields.
+  [[=rpb::field_no<18>{}]] std::unique_ptr<NestedMessage2>
+      optional_nested_message;
+  [[=rpb::field_no<19>{}]] std::unique_ptr<ForeignMessageProto2>
+      optional_foreign_message;
+
+  [[=rpb::field_no<21>{}]] std::optional<NestedEnum2> optional_nested_enum;
+  [[=rpb::field_no<22>{}]] std::optional<ForeignEnumProto2> optional_foreign_enum;
+  [[=rpb::field_no<24>{}]] std::optional<std::string> optional_string_piece;
+  [[=rpb::field_no<25>{}]] std::optional<std::string> optional_cord;
+  [[=rpb::field_no<27>{}]] std::unique_ptr<TestAllTypesProto2> recursive_message;
+
+  // Repeated (31-55).
+  [[=rpb::field_no<31>{}]] std::vector<std::int32_t> repeated_int32;
+  [[=rpb::field_no<32>{}]] std::vector<std::int64_t> repeated_int64;
+  [[=rpb::field_no<33>{}]] std::vector<std::uint32_t> repeated_uint32;
+  [[=rpb::field_no<34>{}]] std::vector<std::uint64_t> repeated_uint64;
+  [[=rpb::field_no<35>{}]] std::vector<rpb::SInt<std::int32_t>> repeated_sint32;
+  [[=rpb::field_no<36>{}]] std::vector<rpb::SInt<std::int64_t>> repeated_sint64;
+  [[=rpb::field_no<37>{}]] std::vector<rpb::Fixed32> repeated_fixed32;
+  [[=rpb::field_no<38>{}]] std::vector<rpb::Fixed64> repeated_fixed64;
+  [[=rpb::field_no<39>{}]] std::vector<rpb::SFixed32> repeated_sfixed32;
+  [[=rpb::field_no<40>{}]] std::vector<rpb::SFixed64> repeated_sfixed64;
+  [[=rpb::field_no<41>{}]] std::vector<float> repeated_float;
+  [[=rpb::field_no<42>{}]] std::vector<double> repeated_double;
+  [[=rpb::field_no<43>{}]] std::vector<bool> repeated_bool;
+  [[=rpb::field_no<44>{}]] std::vector<std::string> repeated_string;
+  [[=rpb::field_no<45>{}]] std::vector<rpb::Bytes> repeated_bytes;
+
+  [[=rpb::field_no<48>{}]] std::vector<NestedMessage2> repeated_nested_message;
+  [[=rpb::field_no<49>{}]] std::vector<ForeignMessageProto2>
+      repeated_foreign_message;
+  [[=rpb::field_no<51>{}]] std::vector<NestedEnum2> repeated_nested_enum;
+  [[=rpb::field_no<52>{}]] std::vector<ForeignEnumProto2> repeated_foreign_enum;
+  [[=rpb::field_no<54>{}]] std::vector<std::string> repeated_string_piece;
+  [[=rpb::field_no<55>{}]] std::vector<std::string> repeated_cord;
+
+  // Maps (56-74).
+  [[=rpb::field_no<56>{}]] std::map<std::int32_t, std::int32_t>
+      map_int32_int32;
+  [[=rpb::field_no<57>{}]] std::map<std::int64_t, std::int64_t>
+      map_int64_int64;
+  [[=rpb::field_no<58>{}]] std::map<std::uint32_t, std::uint32_t>
+      map_uint32_uint32;
+  [[=rpb::field_no<59>{}]] std::map<std::uint64_t, std::uint64_t>
+      map_uint64_uint64;
+  [[=rpb::field_no<60>{}]] std::map<rpb::SInt<std::int32_t>,
+                                    rpb::SInt<std::int32_t>> map_sint32_sint32;
+  [[=rpb::field_no<61>{}]] std::map<rpb::SInt<std::int64_t>,
+                                    rpb::SInt<std::int64_t>> map_sint64_sint64;
+  [[=rpb::field_no<62>{}]] std::map<rpb::Fixed32, rpb::Fixed32>
+      map_fixed32_fixed32;
+  [[=rpb::field_no<63>{}]] std::map<rpb::Fixed64, rpb::Fixed64>
+      map_fixed64_fixed64;
+  [[=rpb::field_no<64>{}]] std::map<rpb::SFixed32, rpb::SFixed32>
+      map_sfixed32_sfixed32;
+  [[=rpb::field_no<65>{}]] std::map<rpb::SFixed64, rpb::SFixed64>
+      map_sfixed64_sfixed64;
+  [[=rpb::field_no<66>{}]] std::map<std::int32_t, float> map_int32_float;
+  [[=rpb::field_no<67>{}]] std::map<std::int32_t, double> map_int32_double;
+  [[=rpb::field_no<68>{}]] std::map<bool, bool> map_bool_bool;
+  [[=rpb::field_no<69>{}]] std::map<std::string, std::string> map_string_string;
+  [[=rpb::field_no<70>{}, =rpb::bytes_type{}]] std::map<std::string, std::string>
+      map_string_bytes;
+  [[=rpb::field_no<71>{}]] std::map<std::string, NestedMessage2>
+      map_string_nested_message;
+  [[=rpb::field_no<72>{}]] std::map<std::string, ForeignMessageProto2>
+      map_string_foreign_message;
+  [[=rpb::field_no<73>{}]] std::map<std::string, NestedEnum2>
+      map_string_nested_enum;
+  [[=rpb::field_no<74>{}]] std::map<std::string, ForeignEnumProto2>
+      map_string_foreign_enum;
+
+  // Packed repeated [packed=true] (75-88): default packed encoding.
+  [[=rpb::field_no<75>{}]] std::vector<std::int32_t> packed_int32;
+  [[=rpb::field_no<76>{}]] std::vector<std::int64_t> packed_int64;
+  [[=rpb::field_no<77>{}]] std::vector<std::uint32_t> packed_uint32;
+  [[=rpb::field_no<78>{}]] std::vector<std::uint64_t> packed_uint64;
+  [[=rpb::field_no<79>{}]] std::vector<rpb::SInt<std::int32_t>> packed_sint32;
+  [[=rpb::field_no<80>{}]] std::vector<rpb::SInt<std::int64_t>> packed_sint64;
+  [[=rpb::field_no<81>{}]] std::vector<rpb::Fixed32> packed_fixed32;
+  [[=rpb::field_no<82>{}]] std::vector<rpb::Fixed64> packed_fixed64;
+  [[=rpb::field_no<83>{}]] std::vector<rpb::SFixed32> packed_sfixed32;
+  [[=rpb::field_no<84>{}]] std::vector<rpb::SFixed64> packed_sfixed64;
+  [[=rpb::field_no<85>{}]] std::vector<float> packed_float;
+  [[=rpb::field_no<86>{}]] std::vector<double> packed_double;
+  [[=rpb::field_no<87>{}]] std::vector<bool> packed_bool;
+  [[=rpb::field_no<88>{}]] std::vector<NestedEnum2> packed_nested_enum;
+
+  // Unpacked repeated [packed=false] (89-102): Unpacked wrapper.
+  [[=rpb::field_no<89>{}]] std::vector<rpb::Unpacked<std::int32_t>>
+      unpacked_int32;
+  [[=rpb::field_no<90>{}]] std::vector<rpb::Unpacked<std::int64_t>>
+      unpacked_int64;
+  [[=rpb::field_no<91>{}]] std::vector<rpb::Unpacked<std::uint32_t>>
+      unpacked_uint32;
+  [[=rpb::field_no<92>{}]] std::vector<rpb::Unpacked<std::uint64_t>>
+      unpacked_uint64;
+  [[=rpb::field_no<93>{}]]
+      std::vector<rpb::Unpacked<rpb::SInt<std::int32_t>>> unpacked_sint32;
+  [[=rpb::field_no<94>{}]]
+      std::vector<rpb::Unpacked<rpb::SInt<std::int64_t>>> unpacked_sint64;
+  [[=rpb::field_no<95>{}]] std::vector<rpb::Unpacked<rpb::Fixed32>>
+      unpacked_fixed32;
+  [[=rpb::field_no<96>{}]] std::vector<rpb::Unpacked<rpb::Fixed64>>
+      unpacked_fixed64;
+  [[=rpb::field_no<97>{}]] std::vector<rpb::Unpacked<rpb::SFixed32>>
+      unpacked_sfixed32;
+  [[=rpb::field_no<98>{}]] std::vector<rpb::Unpacked<rpb::SFixed64>>
+      unpacked_sfixed64;
+  [[=rpb::field_no<99>{}]] std::vector<rpb::Unpacked<float>> unpacked_float;
+  [[=rpb::field_no<100>{}]] std::vector<rpb::Unpacked<double>> unpacked_double;
+  [[=rpb::field_no<101>{}]] std::vector<rpb::Unpacked<bool>> unpacked_bool;
+  [[=rpb::field_no<102>{}]] std::vector<rpb::Unpacked<NestedEnum2>>
+      unpacked_nested_enum;
+
+  // Oneof (111-119).
+  [[=rpb::field_no<111>{}, =rpb::field_no<112>{}, =rpb::field_no<113>{},
+    =rpb::field_no<114>{}, =rpb::field_no<115>{}, =rpb::field_no<116>{},
+    =rpb::field_no<117>{}, =rpb::field_no<118>{}, =rpb::field_no<119>{},
+    =rpb::name<"oneof_uint32">{}, =rpb::name<"oneof_nested_message">{},
+    =rpb::name<"oneof_string">{}, =rpb::name<"oneof_bytes">{},
+    =rpb::name<"oneof_bool">{}, =rpb::name<"oneof_uint64">{},
+    =rpb::name<"oneof_float">{}, =rpb::name<"oneof_double">{},
+    =rpb::name<"oneof_enum">{}]]
+  rpb::OneOf<std::uint32_t, NestedMessage2, rpb::Bytes, std::string, bool,
+             std::uint64_t, float, double, NestedEnum2>
+      oneof_field;
+
+  // Group Data (201-203) as a proto2 group (wire types 3/4).  The proto
+  // field name (used by text/JSON) is the group type name "Data".
+  [[=rpb::field_no<201>{}, =rpb::group_type{},
+    =rpb::name<"Data">{}]] std::unique_ptr<Data> data;
+
+  // Field-name-to-JSON-name convention probes (401-418).
+  [[=rpb::field_no<401>{}]] std::optional<std::int32_t> fieldname1;
+  [[=rpb::field_no<402>{}]] std::optional<std::int32_t> field_name2;
+  [[=rpb::field_no<403>{}]] std::optional<std::int32_t> _field_name3;
+  [[=rpb::field_no<404>{}]] std::optional<std::int32_t> field__name4_;
+  [[=rpb::field_no<405>{}]] std::optional<std::int32_t> field0name5;
+  [[=rpb::field_no<406>{}]] std::optional<std::int32_t> field_0_name6;
+  [[=rpb::field_no<407>{}]] std::optional<std::int32_t> fieldName7;
+  [[=rpb::field_no<408>{}]] std::optional<std::int32_t> FieldName8;
+  [[=rpb::field_no<409>{}]] std::optional<std::int32_t> field_Name9;
+  [[=rpb::field_no<410>{}]] std::optional<std::int32_t> Field_Name10;
+  [[=rpb::field_no<411>{}]] std::optional<std::int32_t> FIELD_NAME11;
+  [[=rpb::field_no<412>{}]] std::optional<std::int32_t> FIELD_name12;
+  [[=rpb::field_no<413>{}]] std::optional<std::int32_t> __field_name13;
+  [[=rpb::field_no<414>{}]] std::optional<std::int32_t> __Field_name14;
+  [[=rpb::field_no<415>{}]] std::optional<std::int32_t> field__name15;
+  [[=rpb::field_no<416>{}]] std::optional<std::int32_t> field__Name16;
+  [[=rpb::field_no<417>{}]] std::optional<std::int32_t> field_name17__;
+  [[=rpb::field_no<418>{}]] std::optional<std::int32_t> Field_name18__;
+
+  rpb::UnknownFields unknown;  // conformance: unknown fields preserved
+
+  bool operator==(TestAllTypesProto2 const &o) const
+  {
+    return rpb::deep_equal(*this, o);
+  }
+};
+
 }  // namespace tmm

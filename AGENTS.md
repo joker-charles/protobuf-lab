@@ -58,6 +58,14 @@ facts from web searches.
 
 - `for_each`, `name_of` (use `identifier_of`).
 - `extract<int>` on an **enumerator** throws "value cannot be extracted".
+- **`if constexpr` does NOT discard the false branch** (GCC 16.1.0, C++20/23/26,
+  with or without `-freflection`): a `static_assert` or a hard-instantiation
+  failure in a discarded `if constexpr` branch is still a compile error
+  (verified 2026-08 with minimal repro). Do NOT put a failing dependent
+  instantiation in an `if constexpr` false branch. Dispatch by **tag-type
+  overload** or **struct partial specialization** instead (see the proto2
+  group support in `codec.hpp`: `serialize_entry_group<std::true_type/…>` and
+  the `GroupPtr`/`GroupPtrMut` partial specializations).
 - `typename [: expr :]::` in an **evaluated expression** (e.g. `return
   typename [: type_of(r) :]::nested::value;`) is a **parse error**
   (`expected '(' before ';'`, 16.0.1 and 16.1.0). Use the scope-splice form
