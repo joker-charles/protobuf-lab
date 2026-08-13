@@ -185,6 +185,15 @@ codec stays within a small constant factor of protoc-generated code, the
 no-codegen ergonomics may be worth the cost; if the gap grows with message
 size/complexity, the hot paths need work first.
 
+On the current fixture the reflection codec is **faster than
+protoc-generated code** (about 0.86x serialize / 0.87x parse, i.e. ~14%
+quicker on both).  Two dispatch-level optimizations got it there: parsing
+resolves tags through a compile-time binary decision tree over the sorted
+field table (O(log N) comparisons instead of scanning every member), and
+serialization reuses per-thread scratch buffers for embedded-message /
+map-entry / packed payloads instead of allocating a temporary string per
+nested chunk.
+
 ## Design in one paragraph
 
 Members carry `[[=rpb::field_no<N>{}]]` annotations; a consteval pass
@@ -236,9 +245,10 @@ verification/   one-file compiler-behavior probes (run.sh)
 - **Enforce the RECOMMENDED conformance level** (currently only REQUIRED
   is enforced; the 14 packed/unpacked output-form alternatives are
   documented as accepted warnings in `tests/conformance_failures.txt`).
-- **Micro-optimize the hot serialization/parsing paths** guided by
-  `bench/bench.cpp` (currently ~1.1x serialize / ~1.2x parse vs
-  protoc-generated code on the benchmark fixture).
+- **Keep validating with larger/more diverse fixtures** (deep nesting,
+  many small messages, big maps) so the benchmark evidence stays honest;
+  the current fixture already shows the reflection codec ahead of
+  protoc-generated code.
 
 ### Research directions (optional, not parity goals)
 

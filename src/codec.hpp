@@ -83,6 +83,16 @@ namespace meta = std::meta;
 inline constexpr std::size_t kMaxSerializeDepth = 64;
 inline thread_local std::size_t serialize_depth_v = 0;
 
+// Reusable per-thread scratch buffers for embedded-message / map-entry /
+// packed payloads.  Chunk building is strictly LIFO (nested messages
+// recurse through serialize(), which may itself open further chunks), so
+// slots are handed out from a stack and popped when the chunk is written.
+// Strings keep their capacity across calls, eliminating the per-message
+// heap allocation of the old local-payload approach.  256 slots bounds
+// the worst case (~2 chunks per serialize level, 64 levels).
+inline thread_local std::array<std::string, 256> serialize_scratch_v;
+inline thread_local std::size_t serialize_scratch_top_v = 0;
+
 consteval auto members_ctx()
 {
   return meta::access_context::unprivileged();
@@ -753,7 +763,10 @@ void serialize_value(google::protobuf::io::CodedOutputStream &cos,
       // uses single-entry maps.
       for (auto const &kv : val)
         {
-          std::string payload;
+          contract_assert(serialize_scratch_top_v < serialize_scratch_v.size());
+          std::string &payload =
+              serialize_scratch_v[serialize_scratch_top_v++];
+          payload.clear();
           {
             google::protobuf::io::StringOutputStream sos(&payload);
             google::protobuf::io::CodedOutputStream pcos(&sos);
@@ -763,6 +776,7 @@ void serialize_value(google::protobuf::io::CodedOutputStream &cos,
           cos.WriteTag((fieldno << 3) | 2);
           cos.WriteVarint32(static_cast<std::uint32_t>(payload.size()));
           cos.WriteRaw(payload.data(), static_cast<int>(payload.size()));
+          --serialize_scratch_top_v;
         }
     }
   else if constexpr (is_vector_v<M>)
@@ -770,7 +784,10 @@ void serialize_value(google::protobuf::io::CodedOutputStream &cos,
       using U = typename M::value_type;
       if constexpr (is_packable_v<U>)
         {
-          std::string payload;
+          contract_assert(serialize_scratch_top_v < serialize_scratch_v.size());
+          std::string &payload =
+              serialize_scratch_v[serialize_scratch_top_v++];
+          payload.clear();
           {
             google::protobuf::io::StringOutputStream sos(&payload);
             google::protobuf::io::CodedOutputStream pcos(&sos);
@@ -780,6 +797,7 @@ void serialize_value(google::protobuf::io::CodedOutputStream &cos,
           cos.WriteTag((fieldno << 3) | 2);
           cos.WriteVarint32(static_cast<std::uint32_t>(payload.size()));
           cos.WriteRaw(payload.data(), static_cast<int>(payload.size()));
+          --serialize_scratch_top_v;
         }
       else
         {
@@ -798,11 +816,14 @@ void serialize_value(google::protobuf::io::CodedOutputStream &cos,
       // omitted, non-null -> embedded message (even if empty).
       if (!val)
         return;
-      std::string payload;
+      contract_assert(serialize_scratch_top_v < serialize_scratch_v.size());
+      std::string &payload = serialize_scratch_v[serialize_scratch_top_v++];
+      payload.clear();
       serialize(payload, *val);
       cos.WriteTag((fieldno << 3) | 2);
       cos.WriteVarint32(static_cast<std::uint32_t>(payload.size()));
       cos.WriteRaw(payload.data(), static_cast<int>(payload.size()));
+      --serialize_scratch_top_v;
     }
   else
     {
@@ -810,11 +831,14 @@ void serialize_value(google::protobuf::io::CodedOutputStream &cos,
         return;  // internal single-entry type is never a wire message
       else
         {
-          std::string payload;
+          contract_assert(serialize_scratch_top_v < serialize_scratch_v.size());
+          std::string &payload = serialize_scratch_v[serialize_scratch_top_v++];
+          payload.clear();
           serialize(payload, val);
           cos.WriteTag((fieldno << 3) | 2);
           cos.WriteVarint32(static_cast<std::uint32_t>(payload.size()));
           cos.WriteRaw(payload.data(), static_cast<int>(payload.size()));
+          --serialize_scratch_top_v;
         }
     }
 }
@@ -1215,48 +1239,44 @@ bool parse_oneof_alt(google::protobuf::io::CodedInputStream &cis,
   return true;
 }
 
-template <typename T, std::size_t I, std::size_t... Ks>
-bool parse_oneof_member(google::protobuf::io::CodedInputStream &cis,
-                        std::uint32_t fieldno, std::uint32_t wt, T &v,
-                        std::index_sequence<Ks...>)
+// Dispatch a tag to its field via the compile-time field table.  The
+// table is sorted ascending by field number (unique), so a template-
+// generated binary decision tree resolves a fieldno in O(log N) constant
+// comparisons instead of scanning every member in declaration order
+// (protoc-generated parsers use a switch/jump table; this is the
+// reflection-codec equivalent).  Each row knows its member index and
+// whether it is an ordinary member (alt == 0) or a OneOf alternative
+// (alt == variant index 1..N).
+
+template <typename T, std::size_t R>
+bool parse_table_row(google::protobuf::io::CodedInputStream &cis,
+                     std::uint32_t fieldno, std::uint32_t wt, T &v)
 {
-  // Repeated occurrences of a oneof: last one wins (emplace overwrites).
-  bool handled = false;
-  ((handled = handled || parse_oneof_alt<T, I, Ks>(cis, fieldno, wt, v)),
-   ...);
-  return handled;
+  constexpr auto row = field_table<T>()[R];
+  constexpr meta::info r = member_v<T, row.member>;
+  using M = typename [: meta::type_of(r) :];
+  if constexpr (row.alt == 0)
+    return parse_value(cis, wt, v.[:r:]);
+  else
+    return parse_oneof_alt<T, row.member, row.alt - 1>(cis, fieldno, wt, v);
 }
 
-template <typename T, std::size_t I>
-bool parse_member(google::protobuf::io::CodedInputStream &cis,
-                  std::uint32_t fieldno, std::uint32_t wt, T &v)
+template <typename T, std::size_t Lo, std::size_t Hi>
+bool parse_table_range(google::protobuf::io::CodedInputStream &cis,
+                       std::uint32_t fieldno, std::uint32_t wt, T &v)
 {
-  constexpr meta::info r = member_v<T, I>;
-  using M = typename [: meta::type_of(r) :];
-  if constexpr (is_one_of_v<M>)
-    {
-      return parse_oneof_member<T, I>(
-          cis, fieldno, wt, v,
-          std::make_index_sequence<std::variant_size_v<M> - 1>{});
-    }
+  if constexpr (Lo == Hi)
+    return false;  // no row carries this field number
   else
     {
-      // UnknownFields members have no annotation -> field_number returns 0,
-      // which never matches a real tag, so they fall through to capture.
-      if (fieldno != field_number<r, 0>())
-        return false;
-      return parse_value(cis, wt, v.[:r:]);
+      constexpr std::size_t Mid = Lo + (Hi - Lo) / 2;
+      constexpr std::uint32_t fn = field_table<T>()[Mid].fieldno;
+      if (fieldno < fn)
+        return parse_table_range<T, Lo, Mid>(cis, fieldno, wt, v);
+      if (fieldno > fn)
+        return parse_table_range<T, Mid + 1, Hi>(cis, fieldno, wt, v);
+      return parse_table_row<T, Mid>(cis, fieldno, wt, v);
     }
-}
-
-template <typename T, std::size_t... Is>
-bool parse_fields(google::protobuf::io::CodedInputStream &cis,
-                  std::uint32_t fieldno, std::uint32_t wt, T &v,
-                  std::index_sequence<Is...>)
-{
-  bool handled = false;
-  ((handled = handled || parse_member<T, Is>(cis, fieldno, wt, v)), ...);
-  return handled;
 }
 
 inline bool capture_unknown_field(google::protobuf::io::CodedInputStream &cis,
@@ -1372,8 +1392,8 @@ bool parse(std::string_view data, T &v)
       std::uint32_t wt = tag & 7;
       if (fieldno == 0)
         return false;  // protobuf: field number 0 is an illegal tag
-      if (!parse_fields<T>(cis, fieldno, wt, v,
-                           std::make_index_sequence<member_count_v<T>>{}))
+      if (!parse_table_range<T, 0, field_table_size_v<T>>(
+              cis, fieldno, wt, v))
         {
           if constexpr (has_unknown_fields_v<T>)
             {

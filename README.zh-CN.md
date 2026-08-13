@@ -167,6 +167,12 @@ cmake --build build -j --target bench
 protoc 生成代码只慢一个小的常数因子，无代码生成的收益可能值得；若差距
 随消息规模/复杂度扩大，则要先优化热路径。
 
+当前 fixture 上反射 codec 已经**快于 protoc 生成代码**（约 0.86x
+serialize / 0.87x parse，两边都快约 14%）。靠两个分派级优化实现：解析用
+编译期生成的排序字段表二分决策树定位 tag（O(log N) 比较，替代逐个成员
+扫描）；序列化复用 thread-local 缓冲来承载内嵌消息/map 项/packed 数据，
+替代每个嵌套块新建临时 string。
+
 ## 设计速览
 
 成员携带 `[[=rpb::field_no<N>{}]]` 注解；consteval 阶段构建
@@ -214,8 +220,8 @@ verification/   单文件编译器行为探针（run.sh）
 - **强制 RECOMMENDED 级 conformance**（当前只强制 REQUIRED；14 个
   packed/unpacked 输出形式差异已在 `tests/conformance_failures.txt`
   记录为接受的 WARNING）。
-- **按 `bench/bench.cpp` 的数据优化序列化/解析热路径**（当前 fixture
-  上约 1.1x serialize / 1.2x parse，相对 protoc 生成代码）。
+- **用更大/更多样的 fixture 持续验证**（深层嵌套、大量小消息、大 map），
+  让基准证据保持可信；当前 fixture 上反射 codec 已经领先 protoc 生成代码。
 
 ### 研究方向（可选，非 parity 目标）
 

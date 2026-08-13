@@ -273,6 +273,13 @@ reflection-generated getopt table, `#embed` prime tables, contracts, and
 - Benchmarks: `bench/bench.cpp` (target `bench`, not a ctest) compares the
   reflection codec against protoc-generated code on the same
   TestAllTypesProto3 fixture; timing uses only std::chrono.  On the current
-  fixture rpb is ~1.1x serialize / ~1.2x parse vs protobuf.
+  fixture rpb is ~0.86x serialize / ~0.87x parse vs protobuf (faster).
+  Dispatch-level optimizations that matter: parsing resolves each tag via
+  a template-generated binary decision tree over the sorted field table
+  (`parse_table_range`/`parse_table_row`, O(log N)) instead of the old
+  declaration-order member scan (`parse_fields`), and serialization reuses
+  per-thread scratch buffers (`serialize_scratch_v` stack,
+  `serialize_scratch_top_v`) for embedded-message/map-entry/packed
+  payloads instead of allocating a `std::string` per nested chunk.
 - libprotobuf is linked only for wire primitives (`CodedInputStream`/
   `CodedOutputStream`); there is no descriptor/reflection runtime by design.
