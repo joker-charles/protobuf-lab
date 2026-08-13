@@ -24,18 +24,25 @@ protoc-generated code and the official protobuf conformance suite.
   annotation-count or alternative-type violations, and `unique_ptr`
   pointee type errors all fail with `static_assert`.
 - **Protobuf merge semantics**: repeated occurrences of singular message
-  fields (including inside oneofs) merge instead of replacing.
+  fields (including inside oneofs and `optional<T>` message members) merge
+  instead of replacing.
+- **Serialization depth guard**: nested messages recurse through
+  `serialize()`, so a thread-local counter (limit 64, matching the
+  parser) catches pathological nesting before it can overflow the stack.
 - **Unknown-field preservation** (opt-in `rpb::UnknownFields` member) and
   proto3 default-value omission.
 
 ## Status
 
 The official conformance suite is green for proto3 binary wire format:
-**637 required `protobuf_test` cases pass, 0 failures** (scalars, enums,
+**637 `protobuf_test` cases pass, 0 failures** (scalars, enums,
 packed/unpacked repeated, maps incl. sint/fixed keys, oneofs, message
 merge, present-but-empty messages, unknown fields, illegal tags,
 truncated input).  JSON, text-format, and proto2 categories are skipped by
-the testee.  See `tests/conformance_failures.txt` (currently empty).
+the testee.  The runner also reports 14 RECOMMENDED-level warnings about
+packed/unpacked output-form alternatives; both encodings are legal, so
+they are documented as accepted in `tests/conformance_failures.txt`
+(which lists no actual failures).
 
 ## Project scope
 
@@ -146,10 +153,10 @@ cmake -S . -B build -DCMAKE_CXX_COMPILER=g++-16 \
 
 | ctest name | what it checks |
 | --- | --- |
-| `selftest` | hand-computed wire bytes, oneof presence, out-of-order field emission, unknown fields, group skip, truncation |
-| `selftest_tt` | roundtrips on the official `TestAllTypesProto3` mirror |
+| `selftest` | hand-computed wire bytes, oneof presence, optional-message merge, depth-64 roundtrip, out-of-order field emission, unknown fields, group skip, truncation |
+| `selftest_tt` | roundtrips on the complete official `TestAllTypesProto3` mirror |
 | `interop` | byte-compare our codec vs protoc-generated code on `tests/test.proto` |
-| `interop_tt` | byte-compare on protobuf's own `test_messages_proto3.proto` |
+| `interop_tt` | byte-compare on protobuf's own `test_messages_proto3.proto` (full schema) |
 | `conformance` | official protobuf conformance runner against `conformance_ours` |
 
 GitHub Actions (`.github/workflows/ci.yml`) builds inside the official
@@ -159,6 +166,24 @@ every push.
 `verification/cpp26-features/run.sh` re-runs the one-file-per-claim
 compiler-behavior probes backing the notes in `AGENTS.md` and
 `docs/reflect_error.md`.
+
+### Benchmarks
+
+`build/bench [iterations]` compares the reflection codec against
+protoc-generated code on the same `TestAllTypesProto3` fixture (fixed
+iteration count, std::chrono only, no third-party benchmark library):
+
+```sh
+cmake --build build -j --target bench
+./build/bench 200000
+```
+
+It prints an ns/op table with serialize/parse ratios plus a checksum (to
+defeat dead-code elimination).  This is the evidence that decides whether
+the struct-as-schema experiment is worth continuing: if the reflection
+codec stays within a small constant factor of protoc-generated code, the
+no-codegen ergonomics may be worth the cost; if the gap grows with message
+size/complexity, the hot paths need work first.
 
 ## Design in one paragraph
 
@@ -174,6 +199,7 @@ and is order-independent.
 
 ```
 src/            codec.hpp + selftest/CLI binaries
+bench/          rpb-vs-protobuf micro-benchmark (not a ctest)
 tests/          test.proto, reference fixtures, interop/conformance scripts
 cmake/          protobuf conformance.cmake patch (applied via PATCH_COMMAND)
 docs/           GCC 16 reflection error log
@@ -191,13 +217,15 @@ verification/   one-file compiler-behavior probes (run.sh)
   using `std::unique_ptr` for every singular message member; user structs
   that keep by-value members should reach for `std::unique_ptr<T>` /
   `std::optional<T>` whenever real presence matters.
-- **`std::optional<T>` message members** replace on repeated occurrences
-  instead of merging (merge is implemented for plain members and oneofs).
 - **Multi-entry maps** serialize in sorted key order; protobuf's `Map`
   order is hash-based and unspecified.  Both are valid wire encodings, but
   byte-level interop fixtures keep maps single-entry.
-- **Serialization has no depth limit** (parsing does, 64 levels); a
-  pathological nested structure could overflow the stack on serialize.
+- **Serialization over-depth aborts**: like the parser's 64-level
+  recursion limit, `serialize()` guards nested-message depth; but while
+  `parse()` returns `false` on over-depth input, `serialize()` has no
+  error channel in its public API, so the guard trips a C++26 contract and
+  aborts via the violation handler (a weak default is provided; a strong
+  `handle_contract_violation` in the application overrides it).
 - **Unknown-field preservation is opt-in** (add an `rpb::UnknownFields`
   member); without it, unknown fields are skipped.
 
@@ -205,18 +233,12 @@ verification/   one-file compiler-behavior probes (run.sh)
 
 ### Engineering hardening (incremental)
 
-- **Serialization depth limit** to match the parser's 64-level recursion
-  guard.
-- **`optional<T>` message merge** so repeated occurrences merge instead of
-  replacing, matching the codec's plain-member/oneof behavior.
-- **Complete the `TestAllTypesProto3` mirror**: repeated wrappers
-  (211-219), Duration/Timestamp/FieldMask/Any (301-315), fieldname*
-  (401-418).
 - **Enforce the RECOMMENDED conformance level** (currently only REQUIRED
-  is enforced; packed/unpacked output-form alternatives are warnings).
-- **Benchmarks** against the official implementation and micro-optimizing
-  the hot serialization/parsing paths — the evidence that decides whether
-  the experiment is worth continuing.
+  is enforced; the 14 packed/unpacked output-form alternatives are
+  documented as accepted warnings in `tests/conformance_failures.txt`).
+- **Micro-optimize the hot serialization/parsing paths** guided by
+  `bench/bench.cpp` (currently ~1.1x serialize / ~1.2x parse vs
+  protoc-generated code on the benchmark fixture).
 
 ### Research directions (optional, not parity goals)
 

@@ -130,10 +130,13 @@ facts from web searches.
 - Contracts: `contract_assert(cond)` keyword; linking requires a user-defined
   `void handle_contract_violation(std::contracts::contract_violation const&)`
   (`<contracts>`). The accessor is `.comment()` (there is **no** `.message()`).
-  Default `contract_assert` semantics: handler is called, then the program
-  terminates (abort). `.text` delta on a tiny TU is ~0.2KB for one
-  assert + handler; the ~9KB figure below was measured on factor's larger
-  binary - context-dependent.
+  **`codec.hpp` ships a weak default handler** (global scope, `abort()`), so
+  header-only consumers link without one; a strong application definition
+  overrides it. Do NOT define the handler inside `namespace rpb` - the
+  contract machinery references the global symbol. Default `contract_assert`
+  semantics: handler is called, then the program terminates (abort). `.text`
+  delta on a tiny TU is ~0.2KB for one assert + handler; the ~9KB figure
+  below was measured on factor's larger binary - context-dependent.
 - Checked arithmetic: `ckd_add/ckd_sub/ckd_mul` via `<stdckdint.h>` (C++26).
 - `std::print` pulls in `<ostream>`; startup cost is dominated by the dynamic
   loader + libstdc++ relocations (~6300 RELA), not by print/format. **Static
@@ -232,10 +235,13 @@ reflection-generated getopt table, `#embed` prime tables, contracts, and
   `std::unique_ptr`; the 10-alternative oneof includes both string and
   bytes (via `rpb::Bytes`); Struct/Value/ListValue break their mutual
   recursion through `unique_ptr` oneof alternatives; all 19 maps are
-  covered (sint/fixed keys use the wrappers).  Remaining omitted (wire-wise
-  redundant): repeated wrappers (211-219), Duration/Timestamp/FieldMask/Any
-  (301-315), fieldname* (401-418).  `ctype=STRING_PIECE/CORD` fields have
-  private accessors in generated 3.21 code; `ref_main_tt` sets them via
+  covered (sint/fixed keys use the wrappers).  The mirror is **complete**:
+  repeated wrappers 211-219, Duration/Timestamp/FieldMask/Any (301-315),
+  Struct/Value/ListValue (304/306/307/316/317/324), and fieldname*
+  (401-418) are all present, and the shared fixture sets every field
+  (repeated wrappers include an empty default-valued message to exercise
+  presence).  `ctype=STRING_PIECE/CORD` fields have private accessors in
+  generated 3.21 code; `ref_main_tt` sets them via
   `TextFormat::MergeFromString`.  Protobuf `Map` serialization order is
   hash order (unspecified) while ours is sorted, so the differential
   fixture keeps maps single-entry.
@@ -246,13 +252,27 @@ reflection-generated getopt table, `#embed` prime tables, contracts, and
   vendored 3.21 `cmake/conformance.cmake` omits `conformance_test_main.cc`
   and `text_format_conformance_suite.cc` (no `main()`, link failure), so
   `cmake/protobuf-conformance.patch` is applied via `PATCH_COMMAND`.
-  Status: 637 required proto3 binary `protobuf_test` cases pass (incl.
+  Status: 637 proto3 binary `protobuf_test` cases pass (incl.
   message-merge semantics, present-empty messages via `unique_ptr`,
   unknown-field preservation); JSON/text/proto2 categories are skipped by
   the adapter.  Merge support came from parsing
   repeated occurrences of singular/oneof message fields into the existing
   value instead of replacing; RECOMMENDED-level packed/unpacked output-form
-  alternatives show up as warnings only (not enforced).  The failure list
-  (`tests/conformance_failures.txt`) is currently empty.
+  alternatives show up as warnings only (not enforced): 14 cases, both
+  encodings are legal, and `tests/conformance_failures.txt` documents them
+  as evaluated-and-accepted while listing no actual failures.
+- Codec guards: parse sets `SetRecursionLimit(kMaxSerializeDepth)` (64) per
+  CodedInputStream, and `serialize()` keeps a thread_local depth counter
+  (`kMaxSerializeDepth` = 64) incremented at every recursive entry - all
+  nested messages recurse through `serialize()`, so one counter covers
+  map values / vector elements / unique_ptr / optional / plain struct
+  members.  Over-deep serialize trips a `contract_assert` and aborts
+  (documented asymmetry: parse returns false).  `optional<T>` message
+  members merge on repeated occurrences (scalar/string stay last-wins),
+  matching plain-member/oneof behavior.
+- Benchmarks: `bench/bench.cpp` (target `bench`, not a ctest) compares the
+  reflection codec against protoc-generated code on the same
+  TestAllTypesProto3 fixture; timing uses only std::chrono.  On the current
+  fixture rpb is ~1.1x serialize / ~1.2x parse vs protobuf.
 - libprotobuf is linked only for wire primitives (`CodedInputStream`/
   `CodedOutputStream`); there is no descriptor/reflection runtime by design.

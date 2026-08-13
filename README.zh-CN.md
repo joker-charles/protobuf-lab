@@ -18,8 +18,11 @@ conformance 套件验证。
   struct 保持 protobuf 风格的值语义（每次拷贝独立存储），无需手写拷贝构造。
 - **编译期校验**：字段号缺失/重复、oneof 注解数或替代类型违规、
   `unique_ptr` 指向非消息类型，全部 `static_assert` 报错。
-- **protobuf merge 语义**：单值消息字段（含 oneof 内）重复出现时合并
-  而非替换。
+- **protobuf merge 语义**：单值消息字段（含 oneof 内与 `optional<T>`
+  消息成员）重复出现时合并而非替换。
+- **序列化深度防护**：嵌套消息都经 `serialize()` 递归，用一个
+  thread_local 计数器（上限 64，与解析侧一致）在病态嵌套击穿栈之前
+  拦下。
 - **未知字段保真**（`rpb::UnknownFields` 成员，opt-in）与 proto3
   默认值省略。
 
@@ -28,8 +31,10 @@ conformance 套件验证。
 官方 conformance 套件在 proto3 二进制 wire 格式上全绿：**637 个必测
 `protobuf_test` 用例通过、0 失败**（标量、枚举、packed/unpacked 重复、
 map 含 sint/fixed 键、oneof、消息合并、显式空消息、未知字段、非法标签、
-截断输入）。JSON、text format、proto2 类目由 testee 跳过。
-`tests/conformance_failures.txt` 当前为空。
+截断输入）。JSON、text format、proto2 类目由 testee 跳过。runner 还会
+报告 14 个 RECOMMENDED 级 packed/unpacked 输出形式 WARNING：两种编码都
+合法，已在 `tests/conformance_failures.txt` 中记录为“评估后接受”（该文件
+不含任何真实失败用例）。
 
 ## 项目定位
 
@@ -134,10 +139,10 @@ cmake -S . -B build -DCMAKE_CXX_COMPILER=g++-16 \
 
 | ctest 名称 | 覆盖内容 |
 | --- | --- |
-| `selftest` | 手算 wire 字节、oneof presence、乱序字段按号发射、未知字段、group 跳过、截断 |
-| `selftest_tt` | 官方 `TestAllTypesProto3` 镜像的 roundtrip |
+| `selftest` | 手算 wire 字节、oneof presence、optional 消息合并、深度 64 roundtrip、乱序字段按号发射、未知字段、group 跳过、截断 |
+| `selftest_tt` | 完整官方 `TestAllTypesProto3` 镜像的 roundtrip |
 | `interop` | 与 protoc 生成代码在 `tests/test.proto` 上逐字节比对 |
-| `interop_tt` | 与 protobuf 官方 `test_messages_proto3.proto` 逐字节比对 |
+| `interop_tt` | 与 protobuf 官方 `test_messages_proto3.proto` 全 schema 逐字节比对 |
 | `conformance` | 官方 conformance runner 对 `conformance_ours` 跑全套 |
 
 GitHub Actions（`.github/workflows/ci.yml`，跑在官方 `gcc:16` 容器内）在
@@ -145,6 +150,22 @@ GitHub Actions（`.github/workflows/ci.yml`，跑在官方 `gcc:16` 容器内）
 
 `verification/cpp26-features/run.sh` 重跑 AGENTS.md 与
 `docs/reflect_error.md` 中编译器行为结论对应的单文件探针。
+
+### 基准测试
+
+`build/bench [iterations]` 在同一个 `TestAllTypesProto3` fixture 上对比
+反射 codec 与 protoc 生成代码（固定迭代次数，只用 std::chrono，不引入
+第三方基准库）：
+
+```sh
+cmake --build build -j --target bench
+./build/bench 200000
+```
+
+输出 ns/op 表格、serialize/parse 比值与一个校验和（用于防止死代码消除）。
+这是判断“结构体即 schema”实验是否值得继续的证据：若反射 codec 相对
+protoc 生成代码只慢一个小的常数因子，无代码生成的收益可能值得；若差距
+随消息规模/复杂度扩大，则要先优化热路径。
 
 ## 设计速览
 
@@ -158,6 +179,7 @@ GitHub Actions（`.github/workflows/ci.yml`，跑在官方 `gcc:16` 容器内）
 
 ```
 src/            codec.hpp + 自测/CLI 二进制
+bench/          rpb 对比 protobuf 的微基准（非 ctest）
 tests/          test.proto、参考 fixture、interop/conformance 脚本
 cmake/          protobuf conformance.cmake 补丁（PATCH_COMMAND 自动应用）
 docs/           GCC 16 反射错误记录
@@ -173,12 +195,12 @@ verification/   单文件编译器行为探针（run.sh）
   `TestAllTypesProto3` 镜像已通过把所有单值消息成员改成 `std::unique_ptr`
   绕开此限制；用户 struct 若保留按值成员，在需要真实 presence 时应使用
   `std::unique_ptr<T>` / `std::optional<T>`。
-- **`std::optional<T>` 消息成员**重复出现时替换而非合并（普通成员与
-  oneof 已实现合并）。
 - **多条目 map** 按排序序序列化；protobuf `Map` 是哈希序（未规定）。
   两者都是合法 wire 编码，但字节级 interop fixture 保持单条目。
-- **序列化没有深度限制**（解析有 64 层）；极端嵌套结构可能在 serialize
-  时爆栈。
+- **序列化超深会 abort**：`serialize()` 与解析侧一样有 64 层嵌套深度
+  防护；但 `parse()` 超深时优雅返回 `false`，而 `serialize()` 的公开
+  接口没有错误通道，超深会触发 C++26 契约断言并经契约处理函数中止进程
+  （库自带 weak 默认处理函数，应用可定义强符号版本覆盖）。
 - **未知字段保真是 opt-in**（需要 `rpb::UnknownFields` 成员）；没有则
   跳过未知字段。
 
@@ -189,15 +211,11 @@ verification/   单文件编译器行为探针（run.sh）
 
 ### 工程收口（增量）
 
-- **序列化深度限制**，对齐解析器的 64 层递归防护。
-- **`optional<T>` 消息合并**：重复出现时合并而非替换，与普通成员/oneof
-  的行为一致。
-- **补全 `TestAllTypesProto3` 镜像**：repeated wrappers（211-219）、
-  Duration/Timestamp/FieldMask/Any（301-315）、fieldname*（401-418）。
-- **强制 RECOMMENDED 级 conformance**（当前只强制 REQUIRED；
-  packed/unpacked 输出形式差异仅是警告）。
-- **基准测试**：与官方实现对比、优化序列化/解析热路径——这是判断实验
-  是否值得继续投入的证据。
+- **强制 RECOMMENDED 级 conformance**（当前只强制 REQUIRED；14 个
+  packed/unpacked 输出形式差异已在 `tests/conformance_failures.txt`
+  记录为接受的 WARNING）。
+- **按 `bench/bench.cpp` 的数据优化序列化/解析热路径**（当前 fixture
+  上约 1.1x serialize / 1.2x parse，相对 protoc 生成代码）。
 
 ### 研究方向（可选，非 parity 目标）
 
