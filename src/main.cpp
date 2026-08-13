@@ -389,6 +389,27 @@ static void test_recursive_oneof_deep_equal()
   check(rpb::parse(bytes, q) && q == a, "recursive oneof roundtrip");
 }
 
+static void test_depth_limit_roundtrip()
+{
+  // Root + 63 nested unique_ptr levels = 64 serialize()/parse() frames,
+  // exactly at kMaxSerializeDepth (parser SetRecursionLimit(64)); proves
+  // the depth guard does not misfire on legal nesting.
+  RecursiveChoice deep;
+  auto *cur = &deep;
+  for (int i = 0; i < 63; ++i)
+    {
+      cur->next = std::make_unique<RecursiveChoice>();
+      cur = std::get<2>(cur->next).get();
+    }
+  cur->next = std::int32_t{42};
+
+  std::string bytes;
+  rpb::serialize(bytes, deep);
+  RecursiveChoice q;
+  check(rpb::parse(bytes, q) && q == deep,
+        "depth-64 nested message roundtrip");
+}
+
 static void test_deep_copy()
 {
   RecursiveChoice a;
@@ -483,6 +504,7 @@ static void run_tests()
   test_optional_message_merge();
   test_out_of_order();
   test_recursive_oneof_deep_equal();
+  test_depth_limit_roundtrip();
   test_deep_copy();
   test_roundtrip();
   test_unknown_field();

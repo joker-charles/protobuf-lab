@@ -46,6 +46,7 @@
 #include <array>
 #include <bit>
 #include <cstdint>
+#include <cstdlib>
 #include <map>
 #include <memory>
 #include <optional>
@@ -55,12 +56,33 @@
 #include <variant>
 #include <vector>
 
+#include <contracts>
 #include <google/protobuf/io/coded_stream.h>
 #include <google/protobuf/io/zero_copy_stream_impl_lite.h>
+
+// C++26 contracts (P2900) are used by the serialization depth guard below.
+// The standard requires a user-provided handle_contract_violation for
+// linking; a weak default keeps the header-only library consumable without
+// one, while a strong user definition still overrides it.  Default
+// semantics: handler runs, then the program aborts.
+__attribute__((weak)) void handle_contract_violation(
+    std::contracts::contract_violation const &)
+{
+  std::abort();
+}
 
 namespace rpb {
 
 namespace meta = std::meta;
+
+// Serialization recursion guard.  Every nested message (unique_ptr /
+// optional / map value / vector element / plain struct member) recurses
+// through serialize(), so one counter covers all paths.  Mirrors the
+// parser's recursion limit; over-deep input aborts via the contract
+// handler (parse, by contrast, returns false) - documented asymmetry.
+inline constexpr std::size_t kMaxSerializeDepth = 64;
+inline thread_local std::size_t serialize_depth_v = 0;
+
 consteval auto members_ctx()
 {
   return meta::access_context::unprivileged();
@@ -833,6 +855,8 @@ template <typename T>
 void serialize(std::string &out, T const &v)
 {
   check_layout<T>();
+  ++serialize_depth_v;
+  contract_assert(serialize_depth_v <= kMaxSerializeDepth);
   google::protobuf::io::StringOutputStream sos(&out);
   google::protobuf::io::CodedOutputStream cos(&sos);
   template for (constexpr auto e : std::define_static_array(field_table<T>()))
@@ -845,6 +869,7 @@ void serialize(std::string &out, T const &v)
       serialize_value(cos, 0,
                       v.[: member_v<T, unknown_member_index_v<T>> :]);
     }
+  --serialize_depth_v;
 }
 
 // --- parsing ---
@@ -1056,7 +1081,7 @@ bool parse_value(google::protobuf::io::CodedInputStream &cis, std::uint32_t wt,
       google::protobuf::io::ArrayInputStream ais(
           payload.data(), static_cast<int>(payload.size()));
       google::protobuf::io::CodedInputStream ecis(&ais);
-      ecis.SetRecursionLimit(64);
+      ecis.SetRecursionLimit(static_cast<int>(kMaxSerializeDepth));
       for (;;)
         {
           std::uint32_t tag = ecis.ReadTag();
@@ -1337,7 +1362,7 @@ bool parse(std::string_view data, T &v)
   google::protobuf::io::ArrayInputStream ais(data.data(),
                                              static_cast<int>(data.size()));
   google::protobuf::io::CodedInputStream cis(&ais);
-  cis.SetRecursionLimit(64);
+  cis.SetRecursionLimit(static_cast<int>(kMaxSerializeDepth));
   for (;;)
     {
       std::uint32_t tag = cis.ReadTag();
