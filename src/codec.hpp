@@ -1127,6 +1127,14 @@ bool parse_value(google::protobuf::io::CodedInputStream &cis, std::uint32_t wt,
     }
   else if constexpr (is_optional_v<M>)
     {
+      if (val.has_value())
+        {
+          // Merge into the existing value: scalar/string/wrapper
+          // alternatives overwrite (last-wins), but message alternatives
+          // accumulate fields, matching the codec's plain-member/oneof
+          // merge semantics.
+          return parse_value(cis, wt, *val);
+        }
       typename M::value_type inner{};
       if (!parse_value(cis, wt, inner))
         return false;

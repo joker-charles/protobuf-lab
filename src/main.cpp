@@ -177,6 +177,14 @@ struct MapBits
   bool operator==(MapBits const &) const = default;
 };
 
+struct OptNested
+{
+  [[=rpb::field_no<1>{}]] std::optional<Address> addr;  // message
+  [[=rpb::field_no<2>{}]] std::optional<std::string> tag;  // scalar
+
+  bool operator==(OptNested const &) const = default;
+};
+
 static void test_hand_map_unpacked()
 {
   // 1: map entries (std::map serializes in sorted key order: "a", "b")
@@ -290,6 +298,36 @@ static void test_oneof_hand_bytes()
             lw)
             && lw.choice.index() == 2 && std::get<2>(lw.choice) == 42,
         "oneof last-wins");
+}
+
+static void test_optional_message_merge()
+{
+  // Repeated occurrences of an optional MESSAGE field merge (protobuf
+  // semantics), while optional scalar/string fields stay last-wins.
+  // Each side sets a different Address member so only merging keeps both.
+  OptNested first;
+  first.addr = Address{"X", 0};
+  first.tag = "first";
+  OptNested second;
+  second.addr = Address{"", 42};
+  second.tag = "second";
+
+  std::string bytes;
+  rpb::serialize(bytes, first);
+  rpb::serialize(bytes, second);  // append: field 1 appears twice
+
+  OptNested q;
+  check(rpb::parse(bytes, q), "optional message merge parse");
+  check(q.addr.has_value() && q.addr->city == "X" && q.addr->zip == 42,
+        "optional message members merged across occurrences");
+  check(q.tag.has_value() && *q.tag == "second",
+        "optional scalar/string stays last-wins");
+
+  // Roundtrip of the merged value stays stable.
+  std::string re;
+  rpb::serialize(re, q);
+  OptNested q2;
+  check(rpb::parse(re, q2) && q2 == q, "merged optional roundtrip");
 }
 
 struct OutOfOrder
@@ -442,6 +480,7 @@ static void run_tests()
   test_hand_wire_types();
   test_hand_map_unpacked();
   test_oneof_hand_bytes();
+  test_optional_message_merge();
   test_out_of_order();
   test_recursive_oneof_deep_equal();
   test_deep_copy();
