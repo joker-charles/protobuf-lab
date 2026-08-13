@@ -134,6 +134,15 @@ target_compile_features(ref_tt PRIVATE cxx_std_17)
 target_include_directories(ref_tt PRIVATE SYSTEM ${PB_INC} ${TT_GEN})
 target_link_libraries(ref_tt PRIVATE protobuf::libprotobuf)
 
+# --- benchmark (not part of ctest: timing is too noisy) -----------------
+# Compares the reflection codec against protoc-generated code on the same
+# TestAllTypesProto3 fixture; see bench/bench.cpp and README "Benchmarks".
+add_executable(bench bench/bench.cpp
+               ${TT_GEN}/google/protobuf/test_messages_proto3.pb.cc)
+reflect_compile(bench)
+target_include_directories(bench PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src
+                           SYSTEM ${TT_GEN})
+
 # --- tests -------------------------------------------------------------
 include(CTest)
 if(BUILD_TESTING)
