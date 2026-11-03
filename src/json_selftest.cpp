@@ -123,6 +123,176 @@ int main()
       CHECK_JSON(out, R"("optionalNestedEnum":"BAZ")"); // enum -> name
     }
 
+  // --- WKT regression coverage -----------------------------------------
+
+  // J1: Timestamp printing used truncating seconds/86400 division, so every
+  // pre-epoch instant with a non-zero time of day came out one day late.
+  // Cover both a one-second-before-epoch instant and the exact minimum, plus
+  // a pre-epoch midnight (remainder 0) to show the borrow is conditional.
+  {
+    tmm::TestAllTypesProto3 p;
+    CHECK(rpb::json_parse(
+        R"({"optionalTimestamp":"1969-12-31T23:59:59Z"})", p));
+    std::string out;
+    CHECK(rpb::json_serialize(out, p));
+    CHECK_JSON(out, R"("optionalTimestamp":"1969-12-31T23:59:59Z")");
+    roundtrip<tmm::TestAllTypesProto3>(
+        R"({"optionalTimestamp":"1969-12-31T23:59:59Z"})");
+  }
+  {
+    tmm::TestAllTypesProto3 p;
+    CHECK(rpb::json_parse(
+        R"({"optionalTimestamp":"0001-01-01T00:00:00Z"})", p));
+    std::string out;
+    CHECK(rpb::json_serialize(out, p));
+    CHECK_JSON(out, R"("optionalTimestamp":"0001-01-01T00:00:00Z")");
+    roundtrip<tmm::TestAllTypesProto3>(
+        R"({"optionalTimestamp":"0001-01-01T00:00:00Z"})");
+  }
+  {
+    tmm::TestAllTypesProto3 p;
+    CHECK(rpb::json_parse(
+        R"({"optionalTimestamp":"1969-12-31T00:00:00Z"})", p));
+    std::string out;
+    CHECK(rpb::json_serialize(out, p));
+    CHECK_JSON(out, R"("optionalTimestamp":"1969-12-31T00:00:00Z")");
+    roundtrip<tmm::TestAllTypesProto3>(
+        R"({"optionalTimestamp":"1969-12-31T00:00:00Z"})");
+  }
+
+  // J2: a Duration whose seconds field is zero but whose nanos are negative
+  // lost the '-' ("-0.5s" printed as "0.5s"): the sign belongs to the whole
+  // value and must be formatted separately from the absolute magnitude.
+  {
+    tmm::TestAllTypesProto3 p;
+    CHECK(rpb::json_parse(R"({"optionalDuration":"-0.5s"})", p));
+    CHECK(p.optional_duration != nullptr);
+    if (p.optional_duration)
+      {
+        CHECK(p.optional_duration->seconds == 0);
+        CHECK(p.optional_duration->nanos == -500000000);
+      }
+    std::string out;
+    CHECK(rpb::json_serialize(out, p));
+    CHECK_JSON(out, R"("optionalDuration":"-0.500s")");
+    roundtrip<tmm::TestAllTypesProto3>(R"({"optionalDuration":"-0.5s"})");
+  }
+  // Negative seconds and nanos together still keep one shared sign.
+  roundtrip<tmm::TestAllTypesProto3>(R"({"optionalDuration":"-1.5s"})");
+
+  // J3: FieldMask JSON is lowerCamelCase; parsing "fooBar.bazQux" must yield
+  // the snake_case proto path foo_bar.baz_qux and printing must reverse it.
+  {
+    tmm::TestAllTypesProto3 p;
+    CHECK(rpb::json_parse(
+        R"({"optionalFieldMask":"fooBar.bazQux"})", p));
+    CHECK(p.optional_field_mask != nullptr);
+    if (p.optional_field_mask)
+      {
+        CHECK(p.optional_field_mask->paths.size() == 1);
+        CHECK(p.optional_field_mask->paths[0] == "foo_bar.baz_qux");
+      }
+    std::string out;
+    CHECK(rpb::json_serialize(out, p));
+    CHECK_JSON(out, R"("optionalFieldMask":"fooBar.bazQux")");
+    roundtrip<tmm::TestAllTypesProto3>(
+        R"({"optionalFieldMask":"fooBar.bazQux"})");
+  }
+  // '.'/'_'/digits are accepted verbatim (protobuf's C++ JSON parser does the
+  // same; the conformance Recommended.FieldMaskInvalidCharacter case is a
+  // known C++ non-conformance and is not enforced), and no '_' is invented
+  // before a digit.
+  {
+    tmm::FieldMask fm;
+    CHECK(rpb::json_parse(R"("foo,bar_bar")", fm));
+    CHECK(fm.paths.size() == 2);
+    if (fm.paths.size() == 2)
+      CHECK(fm.paths[1] == "bar_bar");
+    CHECK(rpb::json_parse(R"("foo3Bar")", fm));
+    CHECK(fm.paths.size() == 1);
+    if (fm.paths.size() == 1)
+      CHECK(fm.paths[0] == "foo3_bar");
+  }
+
+  // J4: calendar / clock / offset validation.  protobuf rejects impossible
+  // dates and out-of-range fields; leap days are real dates.
+  {
+    tmm::TestAllTypesProto3 e;
+    CHECK(!rpb::json_parse(
+        R"({"optionalTimestamp":"2021-02-31T00:00:00Z"})", e));
+  }
+  {
+    tmm::TestAllTypesProto3 e;
+    CHECK(!rpb::json_parse(
+        R"({"optionalTimestamp":"2019-02-29T00:00:00Z"})", e));
+  }
+  {
+    tmm::TestAllTypesProto3 e;
+    CHECK(!rpb::json_parse(
+        R"({"optionalTimestamp":"0001-01-01T00:00:60Z"})", e));
+  }
+  {
+    tmm::TestAllTypesProto3 e;
+    CHECK(!rpb::json_parse(
+        R"({"optionalTimestamp":"2020-01-01T00:00:00+24:00"})", e));
+  }
+  {
+    tmm::TestAllTypesProto3 e;
+    CHECK(!rpb::json_parse(
+        R"({"optionalTimestamp":"2020-01-01T00:00:00+99:99"})", e));
+  }
+  roundtrip<tmm::TestAllTypesProto3>(
+      R"({"optionalTimestamp":"2020-02-29T00:00:00Z"})");
+  // More than nine fractional digits are truncated to nanosecond precision,
+  // matching protobuf, but at least one digit is still required.
+  {
+    tmm::Timestamp ts;
+    CHECK(rpb::json_parse(R"("1970-01-01T00:00:00.123456789123Z")", ts));
+    CHECK(ts.seconds == 0);
+    CHECK(ts.nanos == 123456789);
+    CHECK(!rpb::json_parse(R"("1970-01-01T00:00:00.Z")", ts));
+  }
+
+  // J5: at top level a well-known type uses its own JSON form instead of a
+  // field-keyed object; ordinary messages still require an object root.
+  {
+    tmm::Timestamp ts;
+    CHECK(rpb::json_parse(R"("1969-12-31T23:59:59Z")", ts));
+    CHECK(ts.seconds == -1);
+    CHECK(ts.nanos == 0);
+    std::string out;
+    CHECK(rpb::json_serialize(out, ts));
+    CHECK(out == R"("1969-12-31T23:59:59Z")");
+  }
+  {
+    tmm::Duration d;
+    CHECK(rpb::json_parse(R"("-0.5s")", d));
+    CHECK(d.seconds == 0);
+    CHECK(d.nanos == -500000000);
+    std::string out;
+    CHECK(rpb::json_serialize(out, d));
+    CHECK(out == R"("-0.500s")");
+  }
+  {
+    tmm::FieldMask fm;
+    CHECK(rpb::json_parse(R"("fooBar.bazQux")", fm));
+    CHECK(fm.paths.size() == 1);
+    if (fm.paths.size() == 1)
+      CHECK(fm.paths[0] == "foo_bar.baz_qux");
+    std::string out;
+    CHECK(rpb::json_serialize(out, fm));
+    CHECK(out == R"("fooBar.bazQux")");
+  }
+  {
+    tmm::TestAllTypesProto3 e;
+    CHECK(!rpb::json_parse(R"("not an object")", e));
+    CHECK(!rpb::json_parse("null", e));
+  }
+  {
+    tmm::Timestamp e;
+    CHECK(!rpb::json_parse("null", e));
+  }
+
   // Reject ragged/trailing-comma / out-of-range input.
   {
     tmm::TestAllTypesProto3 e;

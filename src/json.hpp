@@ -661,6 +661,17 @@ template <typename T>
 inline constexpr bool is_wrapper_inner_bytes_v =
     is_wrapper_type_v<T> && member_is_bytes_ann<member_v<T, 0>>();
 
+// A top-level well-known type has its own JSON form rather than a field-keyed
+// object: wrappers are a bare scalar, Timestamp/Duration/FieldMask a string,
+// Struct/Value/ListValue native JSON, and Any a "@type" object.  rpb::json_parse
+// / rpb::json_serialize dispatch to json_parse_value / json_print_value for
+// these instead of requiring an object root.
+template <typename T>
+inline constexpr bool is_wkt_type_v =
+    is_wrapper_type_v<T> || is_timestamp_type_v<T> || is_duration_type_v<T>
+    || is_fieldmask_type_v<T> || is_struct_type_v<T> || is_value_type_v<T>
+    || is_listvalue_type_v<T> || is_any_type_v<T>;
+
 // Whether a member type natively represents a JSON null as a real value
 // (google.protobuf.Value: null -> null_value) rather than "accepted and
 // ignored".  AllFieldAcceptNull sets every other field to null and expects
@@ -743,6 +754,20 @@ inline bool parse_fraction(std::string_view frac, std::int32_t &nanos)
   return true;
 }
 
+inline bool valid_civil_date(int y, int mo, int d)
+{
+  if (y < 1 || y > 9999 || mo < 1 || mo > 12 || d < 1)
+    return false;
+  constexpr int days_in_month[13] = {0, 31, 28, 31, 30, 31, 30,
+                                     31, 31, 30, 31, 30, 31};
+  int max_day = days_in_month[mo];
+  // Gregorian leap year: divisible by 4, except centuries not divisible by
+  // 400 (2000 is a leap year, 1900 is not).
+  if (mo == 2 && (y % 4 == 0 && (y % 100 != 0 || y % 400 == 0)))
+    ++max_day;
+  return d <= max_day;
+}
+
 inline bool json_parse_timestamp(std::string const &s,
                                  std::int64_t &seconds,
                                  std::int32_t &nanos)
@@ -786,9 +811,14 @@ inline bool json_parse_timestamp(std::string const &s,
       std::size_t fstart = i;
       while (i < s.size() && s[i] >= '0' && s[i] <= '9')
         ++i;
-      if (i == fstart || i - fstart > 9)
+      if (i == fstart)
         return false;
-      if (!parse_fraction(s.substr(fstart, i - fstart), nanos))
+      // protobuf accepts any number of fractional digits and keeps only the
+      // first nine (nanosecond resolution), silently truncating the rest.
+      std::size_t keep = i - fstart;
+      if (keep > 9)
+        keep = 9;
+      if (!parse_fraction(s.substr(fstart, keep), nanos))
         return false;
     }
   if (i >= s.size())
@@ -812,13 +842,20 @@ inline bool json_parse_timestamp(std::string const &s,
       if (!dig(i + 4, a) || !dig(i + 5, b))
         return false;
       om = a * 10 + b;
+      // protobuf accepts only a real UTC offset: "+23:59" is the maximum
+      // magnitude, "+24:00"/"+99:99" are rejected.
+      if (oh > 23 || om > 59)
+        return false;
       offset = sign * (oh * 60 + om);
       i += 6;
     }
   else
     return false;
-  if (i != s.size() || y < 1 || y > 9999 || mo < 1 || mo > 12 || d < 1
-      || d > 31 || h > 23 || mi > 59 || se > 60)
+  // Reject impossible calendar dates (2021-02-31, 2019-02-29) and field
+  // ranges the earlier parsing did not constrain (second 60, ...); protobuf
+  // validates the full civil date before converting to epoch seconds.
+  if (i != s.size() || !valid_civil_date(y, mo, d) || h > 23 || mi > 59
+      || se > 59)
     return false;
   std::int64_t days = days_from_civil(y, static_cast<unsigned>(mo),
                                       static_cast<unsigned>(d));
@@ -839,10 +876,18 @@ inline void json_print_timestamp(std::string &out, std::int64_t seconds,
     }
   int y;
   unsigned mo, d;
-  civil_from_days(static_cast<int>(seconds / 86400), y, mo, d);
+  // Floor division by the seconds-per-day.  ``seconds / 86400`` alone
+  // truncates toward zero, so any pre-epoch time with a non-zero time of day
+  // (e.g. 1969-12-31T23:59:59Z == -1) would land on the following day; the
+  // truncated quotient must borrow a day whenever the remainder is negative.
+  std::int64_t days = seconds / 86400;
   std::int64_t rem = seconds % 86400;
   if (rem < 0)
-    rem += 86400;
+    {
+      rem += 86400;
+      --days;
+    }
+  civil_from_days(static_cast<int>(days), y, mo, d);
   int h = static_cast<int>(rem / 3600);
   int mi = static_cast<int>((rem % 3600) / 60);
   int se = static_cast<int>(rem % 60);
@@ -925,28 +970,22 @@ inline void json_print_duration(std::string &out, std::int64_t seconds,
       json_serialize_ok_ = false;
       return;
     }
+  // protobuf prints a Duration as "<sign><abs seconds>[.<abs fraction>]s":
+  // the sign is carried by the whole value, so seconds == 0 with negative
+  // nanos (e.g. -0.5s) must still emit '-'.  Formatting sign and absolute
+  // value separately avoids losing it through "%lld" of the zero seconds.
+  bool neg = seconds < 0 || nanos < 0;
+  if (neg)
+    out.push_back('-');
+  std::uint64_t sec =
+      static_cast<std::uint64_t>(neg ? -seconds : seconds);
+  int n = neg ? -nanos : nanos;
   char buf[40];
-  if (nanos < 0)
-    {
-      std::snprintf(buf, sizeof buf, "%lld", static_cast<long long>(seconds));
-      out += buf;
-      int n = -nanos;
-      int digits = 9;
-      while (digits > 3 && n % 1000 == 0)
-        {
-          n /= 1000;
-          digits -= 3;
-        }
-      std::snprintf(buf, sizeof buf, ".%0*d", digits, n);
-      out += buf;
-      out += 's';
-      return;
-    }
-  std::snprintf(buf, sizeof buf, "%lld", static_cast<long long>(seconds));
+  std::snprintf(buf, sizeof buf, "%llu",
+                static_cast<unsigned long long>(sec));
   out += buf;
-  if (nanos != 0)
+  if (n != 0)
     {
-      int n = nanos;
       int digits = 9;
       while (digits > 3 && n % 1000 == 0)
         {
@@ -959,41 +998,54 @@ inline void json_print_duration(std::string &out, std::int64_t seconds,
   out += 's';
 }
 
-// FieldMask: parse camelCase paths into snake_case, print the reverse.
+// FieldMask: the JSON form is a comma-separated list of lowerCamelCase paths,
+// while the proto form stores snake_case paths.  The conversion follows
+// protobuf (FieldMaskUtil and the protobuf C++ JSON parser, which is what the
+// conformance suite's own C++ implementation does):
+//   * ',' separates paths; empty segments are dropped;
+//   * '.' and '_' and digits pass through unchanged (no '_' is invented
+//     before a digit, so "foo_3_bar" stays "foo_3_bar");
+//   * an uppercase letter becomes '_' + its lowercase form, unless it starts
+//     a path or a '.'-separated segment, where it is merely lowercased
+//     ("foo.Bar" -> "foo.bar").
 inline bool json_parse_fieldmask(std::string const &s,
                                  std::vector<std::string> &paths)
 {
+  paths.clear();
   if (s.empty())
     return true;  // empty fieldmask -> no paths
   std::string cur;
-  for (std::size_t i = 0; i < s.size(); ++i)
+  bool seg_start = true;  // at start of a path or of a "." segment
+  for (char ch : s)
     {
-      char ch = s[i];
+      unsigned char uc = static_cast<unsigned char>(ch);
       if (ch == ',')
         {
-          paths.push_back(std::move(cur));
+          if (!cur.empty())
+            paths.push_back(std::move(cur));
           cur.clear();
+          seg_start = true;
           continue;
         }
-      if (ch == '_' || !(std::isalnum(static_cast<unsigned char>(ch))))
+      if (!std::isalnum(uc) && ch != '.' && ch != '_')
         return false;
-      if (std::isupper(static_cast<unsigned char>(ch)))
+      if (std::isupper(uc))
         {
-          if (!cur.empty())
+          if (!seg_start)
             cur.push_back('_');
-          cur.push_back(static_cast<char>(
-              std::tolower(static_cast<unsigned char>(ch))));
-        }
-      else if (std::isdigit(static_cast<unsigned char>(ch)) && !cur.empty()
-               && !std::isdigit(static_cast<unsigned char>(cur.back())))
-        {
-          cur.push_back('_');
-          cur.push_back(ch);
+          cur.push_back(static_cast<char>(std::tolower(uc)));
+          seg_start = false;
         }
       else
-        cur.push_back(ch);
+        {
+          cur.push_back(ch);
+          // '_' starts the next word and '.' the next segment; either way an
+          // immediately following uppercase letter must not gain a '_'.
+          seg_start = (ch == '.' || ch == '_');
+        }
     }
-  paths.push_back(std::move(cur));
+  if (!cur.empty())
+    paths.push_back(std::move(cur));
   return true;
 }
 
@@ -1006,22 +1058,37 @@ inline void json_print_fieldmask(std::string &out,
       if (!first)
         out.push_back(',');
       first = false;
-      bool cap = false;
+      bool cap_next = false;
+      bool seg_start = true;  // first char of a path or of a "." segment
       for (char ch : p)
         {
           if (ch == '_')
             {
-              cap = true;
+              cap_next = true;
               continue;
             }
-          if (cap)
+          if (ch == '.')
+            {
+              out.push_back('.');
+              cap_next = false;
+              seg_start = true;
+              continue;
+            }
+          if (cap_next)
             {
               out.push_back(static_cast<char>(
                   std::toupper(static_cast<unsigned char>(ch))));
-              cap = false;
+              cap_next = false;
+            }
+          else if (seg_start && std::isupper(static_cast<unsigned char>(ch)))
+            {
+              // protobuf lowercases the first letter of every path segment.
+              out.push_back(static_cast<char>(
+                  std::tolower(static_cast<unsigned char>(ch))));
             }
           else
             out.push_back(ch);
+          seg_start = false;
         }
     }
 }
@@ -2119,14 +2186,40 @@ inline void json_print_any(std::string &out, tmm::Any const &v)
 template <typename T>
 bool json_parse(std::string_view input, T &out)
 {
-  return json_detail::json_parse(input, out);
+  if constexpr (json_detail::is_wkt_type_v<T>)
+    {
+      // A top-level well-known type uses its own JSON form (a bare string for
+      // Timestamp/Duration/FieldMask, a scalar for wrappers, native JSON for
+      // Struct/Value/ListValue, a "@type" object for Any), so hand the root
+      // value to the WKT dispatcher.  A JSON null at the root is still
+      // rejected: rpb::json_parse has never accepted a null root (protobuf's
+      // own parser rather treats a null root as an empty message; this is a
+      // deliberate pre-existing rpb restriction, kept here for consistency).
+      json_detail::jvalue v;
+      if (!json_detail::json_parse_value(input, v))
+        return false;
+      if (v.kind == json_detail::jkind::null)
+        {
+          // google.protobuf.Value has a real JSON null form (null_value);
+          // every other well-known type rejects a null root.
+          if constexpr (json_detail::is_value_type_v<T>)
+            return json_detail::json_parse_value(v, out, false);
+          return false;
+        }
+      return json_detail::json_parse_value(v, out, false);
+    }
+  else
+    return json_detail::json_parse(input, out);
 }
 
 template <typename T>
 bool json_serialize(std::string &out, T const &v)
 {
   json_detail::json_serialize_ok_ = true;
-  json_detail::json_print_message(out, v);
+  if constexpr (json_detail::is_wkt_type_v<T>)
+    json_detail::json_print_value(out, v, false);
+  else
+    json_detail::json_print_message(out, v);
   return json_detail::json_serialize_ok_;
 }
 
