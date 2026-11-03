@@ -34,28 +34,35 @@ protoc-generated code and the official protobuf conformance suite.
 
 ## Status
 
-The official conformance suite is green for proto3 binary wire format:
-**637 `protobuf_test` cases pass, 0 failures** (scalars, enums,
-packed/unpacked repeated, maps incl. sint/fixed keys, oneofs, message
-merge, present-but-empty messages, unknown fields, illegal tags,
-truncated input).  JSON, text-format, and proto2 categories are skipped by
-the testee.  The runner also reports 14 RECOMMENDED-level warnings about
-packed/unpacked output-form alternatives; both encodings are legal, so
-they are documented as accepted in `tests/conformance_failures.txt`
-(which lists no actual failures).
+The official conformance suite is green for the implemented categories:
+
+- proto3 binary + JSON and proto2 binary + JSON: **1938 successes, 0
+  unexpected failures, 1 expected failure**;
+- text format: **116 successes, 0 unexpected failures**.  The expected
+  failure is a RECOMMENDED JSON test where our FieldMask parser follows
+  protobuf's own C++ implementation (which lists the same test in its
+  `failure_list_cpp.txt`); see `tests/conformance_failures.txt`.
+
+The 82 RECOMMENDED-level warnings (42 of them packed/unpacked
+output-form alternatives; both encodings are legal) are documented as
+accepted.  A 2026-11 hardening
+audit fixed latent wire/JSON/text defects that the fixed conformance
+fixtures do not cover; the findings, verification and intentional
+deviations are recorded in `docs/bug-audit-2026-11.md`.
 
 ## Project scope
 
 This is an **experimental wire codec, not a protobuf reimplementation**.
-It targets the proto3 binary wire format for struct-shaped messages and
-deliberately reuses protobuf's own wire primitives
-(`CodedInputStream`/`CodedOutputStream`) and official test suites.  The
-point of the experiment is that C++26 static reflection can drive
-serialization with **no code-generation step and no runtime descriptor** —
-the struct *is* the schema.  Full protobuf parity (descriptors,
-JSON/text formats, proto2, extensions, cross-language tooling) is
-explicitly out of scope.  Success criterion: can struct-as-schema replace
-the protoc pipeline for a useful proto3 subset?
+It targets struct-shaped messages and deliberately reuses protobuf's own
+wire primitives (`CodedInputStream`/`CodedOutputStream`) and official test
+suites.  The point of the experiment is that C++26 static reflection can
+drive serialization with **no code-generation step and no runtime
+descriptor** — the struct *is* the schema.  proto3 binary, proto2
+(including groups), text format and JSON (including well-known types) are
+implemented; full protobuf parity (descriptors, extensions, required-field
+semantics, cross-language tooling) is explicitly out of scope.  Success
+criterion: can struct-as-schema replace the protoc pipeline for a useful
+protobuf subset?
 
 ## Requirements
 
@@ -124,8 +131,9 @@ A runnable version is in `examples/roundtrip.cpp`.
 ### Constraints to plan around
 
 - g++-16 with C++26 `-freflection` is the only hard toolchain requirement.
-- proto3 binary wire format for struct-shaped messages only; JSON, text
-  format, and proto2 are not implemented (see "Project scope").
+- struct-shaped messages only; proto3 binary, proto2 (groups; no required/
+  extensions), text format and JSON (well-known types included) are
+  implemented (see "Project scope" and `docs/bug-audit-2026-11.md`).
 - Field numbers come from `[[=rpb::field_no<N>{}]]` annotations: adding or
   removing members does not change the wire format, but renumbering does.
 - Singular message members: use `std::unique_ptr<T>` for real presence
@@ -149,14 +157,24 @@ cmake -S . -B build -DCMAKE_CXX_COMPILER=g++-16 \
   -DFETCHCONTENT_SOURCE_DIR_PROTOBUF=$PWD/protobuf-3.21.12
 ```
 
+If GitHub is unreachable, point FetchContent at a mirror:
+
+```sh
+cmake -S . -B build -DCMAKE_CXX_COMPILER=g++-16 \
+  -DRPB_PROTOBUF_REPO=https://ghfast.top/https://github.com/protocolbuffers/protobuf.git
+```
+
 ### Tests
 
 | ctest name | what it checks |
 | --- | --- |
 | `selftest` | hand-computed wire bytes, oneof presence, optional-message merge, depth-64 roundtrip, out-of-order field emission, unknown fields, group skip, truncation |
 | `selftest_tt` | roundtrips on the complete official `TestAllTypesProto3` mirror |
+| `json_selftest` | JSON parse/serialize round-trips incl. WKT edge cases |
+| `text_selftest` | text-format parse/print incl. proto2 groups and `Value` |
 | `interop` | byte-compare our codec vs protoc-generated code on `tests/test.proto` |
 | `interop_tt` | byte-compare on protobuf's own `test_messages_proto3.proto` (full schema) |
+| `interop_wkt` | JSON/text WKT interop against the official generated reference |
 | `conformance` | official protobuf conformance runner against `conformance_ours` |
 
 GitHub Actions (`.github/workflows/ci.yml`) builds inside the official
@@ -211,14 +229,15 @@ src/            codec.hpp + selftest/CLI binaries
 bench/          rpb-vs-protobuf micro-benchmark (not a ctest)
 tests/          test.proto, reference fixtures, interop/conformance scripts
 cmake/          protobuf conformance.cmake patch (applied via PATCH_COMMAND)
-docs/           GCC 16 reflection error log
+docs/           GCC 16 reflection error log, 2026-11 bug audit
 verification/   one-file compiler-behavior probes (run.sh)
 ```
 
 ## Known limitations
 
-- **proto2**, **JSON**, and **text format** are not implemented; the
-  conformance testee skips those categories.
+- **proto2 required fields and extensions** are not implemented (groups,
+  presence and proto2 binary/JSON/text are).  `docs/bug-audit-2026-11.md`
+  lists the remaining intentional text/JSON strictness deviations.
 - **Value-semantics struct members** (still supported; e.g. `Person.home`
   in the selftests): an all-default by-value nested message is treated as
   unset and omitted, so "present but empty" cannot be expressed for such
@@ -243,8 +262,9 @@ verification/   one-file compiler-behavior probes (run.sh)
 ### Engineering hardening (incremental)
 
 - **Enforce the RECOMMENDED conformance level** (currently only REQUIRED
-  is enforced; the 14 packed/unpacked output-form alternatives are
-  documented as accepted warnings in `tests/conformance_failures.txt`).
+  is enforced; 42 of the 82 RECOMMENDED warnings are packed/unpacked
+  output-form alternatives, documented as accepted in
+  `tests/conformance_failures.txt`).
 - **Keep validating with larger/more diverse fixtures** (deep nesting,
   many small messages, big maps) so the benchmark evidence stays honest;
   the current fixture already shows the reflection codec ahead of
@@ -252,12 +272,12 @@ verification/   one-file compiler-behavior probes (run.sh)
 
 ### Research directions (optional, not parity goals)
 
-- **proto2 support** (required fields, groups, extensions, defaults) and
-  the proto2 half of the conformance suite — only meaningful if the
-  struct-as-schema experiment succeeds and a proto2 subset is wanted.
-- **JSON and text-format support**, including the well-known-type JSON
-  mapping (Struct/Value/Any/Duration/Timestamp/FieldMask, NaN/Inf,
-  enum-as-string).
+- **proto2 required fields and extensions** (groups, presence and
+  defaults are implemented and conformance-green).
+- **Remaining text/JSON strictness parity** — the low-priority deviations
+  listed in `docs/bug-audit-2026-11.md` (text `//` comments, leading
+  separators, map bracket lists, unicode escape edge cases, proto3
+  invalid-UTF-8 binary validation).
 
 ## License
 

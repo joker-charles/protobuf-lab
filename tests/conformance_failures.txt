@@ -1,16 +1,27 @@
 # Expected-failure list for the official conformance suite.
-# Currently empty: the proto3 binary protobuf_test category passes fully
-# (637 successes, 0 unexpected failures; JSON/text/proto2 are skipped).
-# Add one test name per line if a regression appears (see
-# conformance_test_runner --verbose for exact names).
 #
-# Known-and-accepted (NOT failures, so deliberately not listed here): the
-# runner reports 14 RECOMMENDED-level
-#   Recommended.Proto3.ProtobufInput.ValidDataRepeated.<TYPE>
-#   .PackedInput.UnpackedOutput.ProtobufOutput
-# cases as WARNING because we always emit the canonical packed encoding
-# for packable repeated fields while the runner's reference encodes that
-# particular fixture unpacked.  Both are legal wire encodings of the same
-# message; the RECOMMENDED output-form requirement is not enforced
-# (--enforce_recommended is off), and the codec intentionally keeps one
-# canonical form.  Evaluated 2026-08: keep as-is.
+# As of the 2026-11 audit the suite is green for every implemented category:
+#   - proto3 binary/JSON + proto2 binary/JSON: 1938 successes, 0 unexpected
+#     failures, 1 expected failure (the entry at the end of this file);
+#   - text format: 116 successes, 0 unexpected failures.
+# JSON, text format and proto2 are all enabled by the testee now (older
+# revisions of this comment said they were skipped and quoted the proto3-only
+# "637 successes" count).
+#
+# The runner still reports RECOMMENDED-level WARNINGs (82 in the 2026-11 run).
+# They are not failures because --enforce_recommended is off.  The largest
+# group is 42 packed/unpacked output-form alternatives
+# (ValidDataRepeated.*.PackedInput/UnpackedInput -> DefaultOutput/UnpackedOutput):
+# both encodings are legal wire encodings of the same message, and the codec
+# intentionally emits one canonical form (packed for packable fields).  The
+# rest are accepted recommendations around text unknown-field printing,
+# FieldMask round-tripping, base64url output forms and unknown enum/extension
+# naming.  Add one test name per line below if a real REQUIRED regression
+# appears; `--verbose` prints the exact names.
+#
+# RECOMMENDED JSON test (protobuf's own C++ failure_list_cpp.txt lists it as
+# a known non-conformance too): our FieldMask JSON parser accepts underscore
+# characters ("foo,bar_bar") because protobuf's C++ FieldMaskUtil::FromJsonString
+# does the same.  The conformance suite expects a parse failure here; we
+# follow the reference implementation instead of the recommendation.
+Recommended.Proto3.JsonInput.FieldMaskInvalidCharacter

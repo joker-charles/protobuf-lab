@@ -23,8 +23,14 @@ set(protobuf_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
 set(protobuf_BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
 set(protobuf_BUILD_CONFORMANCE ON CACHE BOOL "" FORCE)
 
+# The repository URL is overridable so a mirror can be used without touching
+# the build files, e.g. in mainland China:
+#   -DRPB_PROTOBUF_REPO=https://ghfast.top/https://github.com/protocolbuffers/protobuf.git
+set(RPB_PROTOBUF_REPO "https://github.com/protocolbuffers/protobuf.git"
+    CACHE STRING "protobuf git repository URL")
+
 FetchContent_Declare(protobuf
-  GIT_REPOSITORY https://github.com/protocolbuffers/protobuf.git
+  GIT_REPOSITORY ${RPB_PROTOBUF_REPO}
   GIT_TAG v3.21.12
   # Vendored 3.21 cmake/conformance.cmake omits conformance_test_main.cc
   # and text_format_conformance_suite.cc, so conformance_test_runner has no
@@ -91,6 +97,10 @@ add_executable(json_selftest src/json_selftest.cpp)
 reflect_compile(json_selftest)
 target_include_directories(json_selftest PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
 
+add_executable(text_selftest src/text_selftest.cpp)
+reflect_compile(text_selftest)
+target_include_directories(text_selftest PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+
 # --- conformance testee ------------------------------------------------
 set(CONF_GEN ${CMAKE_CURRENT_BINARY_DIR}/gen_conf)
 file(MAKE_DIRECTORY ${CONF_GEN})
@@ -138,6 +148,14 @@ target_compile_features(ref_tt PRIVATE cxx_std_17)
 target_include_directories(ref_tt PRIVATE SYSTEM ${PB_INC} ${TT_GEN})
 target_link_libraries(ref_tt PRIVATE protobuf::libprotobuf)
 
+# JSON + text-format interop for the well-known types against the official
+# test_messages_proto3.proto reference (protoc-generated code).
+add_executable(interop_wkt tests/interop_wkt.cc
+               ${TT_GEN}/google/protobuf/test_messages_proto3.pb.cc)
+reflect_compile(interop_wkt)
+target_include_directories(interop_wkt PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src
+                           SYSTEM ${TT_GEN})
+
 # --- benchmark (not part of ctest: timing is too noisy) -----------------
 # Compares the reflection codec against protoc-generated code on the same
 # TestAllTypesProto3 fixture; see bench/bench.cpp and README "Benchmarks".
@@ -153,6 +171,8 @@ if(BUILD_TESTING)
   add_test(NAME selftest COMMAND reflect_proto --test)
   add_test(NAME selftest_tt COMMAND reflect_proto_tt --test)
   add_test(NAME json_selftest COMMAND json_selftest)
+  add_test(NAME text_selftest COMMAND text_selftest)
+  add_test(NAME interop_wkt COMMAND interop_wkt)
   add_test(NAME interop
            COMMAND sh ${CMAKE_CURRENT_SOURCE_DIR}/tests/interop.sh
                    $<TARGET_FILE:reflect_proto> $<TARGET_FILE:ref>)

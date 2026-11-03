@@ -28,24 +28,30 @@ conformance 套件验证。
 
 ## 状态
 
-官方 conformance 套件在 proto3 二进制 wire 格式上全绿：**637 个必测
-`protobuf_test` 用例通过、0 失败**（标量、枚举、packed/unpacked 重复、
-map 含 sint/fixed 键、oneof、消息合并、显式空消息、未知字段、非法标签、
-截断输入）。JSON、text format、proto2 类目由 testee 跳过。runner 还会
-报告 14 个 RECOMMENDED 级 packed/unpacked 输出形式 WARNING：两种编码都
-合法，已在 `tests/conformance_failures.txt` 中记录为“评估后接受”（该文件
-不含任何真实失败用例）。
+官方 conformance 套件在已实现类目上全绿：
+
+- proto3 binary + JSON、proto2 binary + JSON：**1938 successes、
+  0 unexpected failures、1 expected failure**；
+- text format：**116 successes、0 unexpected failures**。该 expected
+  failure 是一个 RECOMMENDED JSON 用例，我们的 FieldMask 解析行为与
+  protobuf 官方 C++ 实现一致（其 `failure_list_cpp.txt` 也列出该项），
+  详见 `tests/conformance_failures.txt`。
+
+82 个 RECOMMENDED 级 WARNING（其中 42 个是 packed/unpacked 输出形式；
+两种编码都合法）仍记录为可接受。2026-11 的加固审计修复了固定 conformance fixture
+覆盖不到的潜在 wire/JSON/text 缺陷，结论、验证与有意保留的差异见
+`docs/bug-audit-2026-11.md`。
 
 ## 项目定位
 
-这是一个**实验性 wire codec，不是 protobuf 的重实现**。它只覆盖
-struct 型消息的 proto3 二进制 wire 格式，并刻意复用 protobuf 自己的
-wire 原语（`CodedInputStream`/`CodedOutputStream`）和官方测试套件。
-实验的目的是证明 C++26 静态反射能驱动序列化——**无代码生成、无运行时
-descriptor**，结构体本身就是 schema。protobuf 全量对齐（descriptor、
-JSON/text 格式、proto2、扩展、跨语言工具链）明确不在范围内。实验的
-成功标准：在有用的 proto3 子集上，“结构体即 schema”能否替代 protoc
-管线？
+这是一个**实验性 codec，不是 protobuf 的重实现**。它面向 struct 型
+消息，并刻意复用 protobuf 自己的 wire 原语
+（`CodedInputStream`/`CodedOutputStream`）和官方测试套件。实验的目的是
+证明 C++26 静态反射能驱动序列化——**无代码生成、无运行时 descriptor**，
+结构体本身就是 schema。已实现 proto3 二进制、proto2（含 group）、text
+format 与 JSON（含 well-known type）；protobuf 全量对齐（descriptor、
+扩展、required 语义、跨语言工具链）明确不在范围内。实验的成功标准：
+在有用的 protobuf 子集上，“结构体即 schema”能否替代 protoc 管线？
 
 ## 环境要求
 
@@ -53,7 +59,8 @@ JSON/text 格式、proto2、扩展、跨语言工具链）明确不在范围内�
   `-freflection`）。项目在 g++-16 16.1.0（stonking/26.10 仓库）验证。
 - CMake >= 3.20。
 - 首次 configure 需要网络：protobuf **v3.21.12** 通过 `FetchContent`
-  自动拉取。
+  自动拉取。GitHub 不可达时可用 `-DRPB_PROTOBUF_REPO=` 指向镜像
+  （如 `https://ghfast.top/https://github.com/protocolbuffers/protobuf.git`）。
 
 ## 用法
 
@@ -112,8 +119,9 @@ int main() {
 ### 使用前要了解的限制
 
 - 唯一硬性工具链要求：g++-16 的 C++26 `-freflection`。
-- 仅支持 struct 型消息的 proto3 二进制 wire 格式；JSON、text format、
-  proto2 未实现（见“项目定位”）。
+- 仅支持 struct 型消息；已实现 proto3 二进制、proto2（group；不含
+  required/扩展）、text format 与 JSON（含 well-known type，见“项目定位”
+  与 `docs/bug-audit-2026-11.md`）。
 - 字段号来自 `[[=rpb::field_no<N>{}]]` 注解：增删成员不改变 wire 格式，
   但改字段号会。
 - 单值消息成员：需要真实 presence（含递归）时用 `std::unique_ptr<T>`；
@@ -135,14 +143,24 @@ cmake -S . -B build -DCMAKE_CXX_COMPILER=g++-16 \
   -DFETCHCONTENT_SOURCE_DIR_PROTOBUF=$PWD/protobuf-3.21.12
 ```
 
+GitHub 不可达时可指定镜像：
+
+```sh
+cmake -S . -B build -DCMAKE_CXX_COMPILER=g++-16 \
+  -DRPB_PROTOBUF_REPO=https://ghfast.top/https://github.com/protocolbuffers/protobuf.git
+```
+
 ### 测试
 
 | ctest 名称 | 覆盖内容 |
 | --- | --- |
 | `selftest` | 手算 wire 字节、oneof presence、optional 消息合并、深度 64 roundtrip、乱序字段按号发射、未知字段、group 跳过、截断 |
 | `selftest_tt` | 完整官方 `TestAllTypesProto3` 镜像的 roundtrip |
+| `json_selftest` | JSON 解析/序列化往返与 WKT 边界 |
+| `text_selftest` | text format 解析/打印（含 proto2 group、`Value`） |
 | `interop` | 与 protoc 生成代码在 `tests/test.proto` 上逐字节比对 |
 | `interop_tt` | 与 protobuf 官方 `test_messages_proto3.proto` 全 schema 逐字节比对 |
+| `interop_wkt` | 与官方生成参考的 JSON/text WKT 互操作 |
 | `conformance` | 官方 conformance runner 对 `conformance_ours` 跑全套 |
 
 GitHub Actions（`.github/workflows/ci.yml`，跑在官方 `gcc:16` 容器内）在
@@ -188,14 +206,15 @@ src/            codec.hpp + 自测/CLI 二进制
 bench/          rpb 对比 protobuf 的微基准（非 ctest）
 tests/          test.proto、参考 fixture、interop/conformance 脚本
 cmake/          protobuf conformance.cmake 补丁（PATCH_COMMAND 自动应用）
-docs/           GCC 16 反射错误记录
+docs/           GCC 16 反射错误记录、2026-11 缺陷审计
 verification/   单文件编译器行为探针（run.sh）
 ```
 
 ## 已知限制
 
-- **proto2**、**JSON**、**text format** 未实现；conformance testee 跳过
-  这些类目。
+- **proto2 required/扩展** 未实现（group、presence、proto2 binary/JSON/
+  text 已实现）。其余有意保留的 text/JSON 严格性差异见
+  `docs/bug-audit-2026-11.md`。
 - **按值消息成员**（仍然支持；如自测里的 `Person.home`）：全默认的按值
   嵌套消息视为未设置而省略，因此这类成员无法表达“设置了但为空”。官方
   `TestAllTypesProto3` 镜像已通过把所有单值消息成员改成 `std::unique_ptr`
@@ -217,19 +236,19 @@ verification/   单文件编译器行为探针（run.sh）
 
 ### 工程收口（增量）
 
-- **强制 RECOMMENDED 级 conformance**（当前只强制 REQUIRED；14 个
-  packed/unpacked 输出形式差异已在 `tests/conformance_failures.txt`
-  记录为接受的 WARNING）。
+- **强制 RECOMMENDED 级 conformance**（当前只强制 REQUIRED；82 个
+  RECOMMENDED WARNING 中 42 个是 packed/unpacked 输出形式差异，已在
+  `tests/conformance_failures.txt` 记录为接受）。
 - **用更大/更多样的 fixture 持续验证**（深层嵌套、大量小消息、大 map），
   让基准证据保持可信；当前 fixture 上反射 codec 已经领先 protoc 生成代码。
 
 ### 研究方向（可选，非 parity 目标）
 
-- **proto2 支持**（required、group、扩展、默认值），并启用 conformance
-  的 proto2 半区——仅当“结构体即 schema”实验成功且确实需要 proto2 子集
-  时才有意义。
-- **JSON 与 text format 支持**，包括 well-known type 的 JSON 映射
-  （Struct/Value/Any/Duration/Timestamp/FieldMask、NaN/Inf、枚举字符串化）。
+- **proto2 required/扩展**（group、presence、默认值已实现且 conformance
+  全绿）。
+- **剩余 text/JSON 严格性对齐**：见 `docs/bug-audit-2026-11.md` 的低优先级
+  差异（text 的 `//` 注释、前导分隔符、map 方括号列表、unicode 转义边界、
+  proto3 二进制非法 UTF-8 校验）。
 
 ## 许可证
 

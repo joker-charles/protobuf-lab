@@ -2,11 +2,14 @@
 
 ## Purpose
 
-This repo (`/home/joker/apps/protobuf-lab`) hosts an **experimental protobuf
-wire-format codec driven by C++26 static reflection** (sources in `src/`),
+This repo (`/home/rocky/Projects/json/protobuf-lab`) hosts an **experimental
+protobuf codec driven by C++26 static reflection** (sources in `src/`),
 plus a local vendored protobuf 3.21.12 tree (`protobuf-3.21.12/`,
 gitignored) that doubles as the offline FetchContent cache.  Fresh clones
-fetch protobuf 3.21.12 from GitHub automatically (see CMakeLists.txt).
+fetch protobuf 3.21.12 from GitHub automatically (see CMakeLists.txt); in
+networks where GitHub is unreachable use the `RPB_PROTOBUF_REPO` cache
+variable with a mirror, e.g.
+`-DRPB_PROTOBUF_REPO=https://ghfast.top/https://github.com/protocolbuffers/protobuf.git`.
 
 The document below is the accumulated, **verified** modern-C++ knowledge from
 the coreutils factor pilot and this session. Read it before writing any
@@ -21,7 +24,8 @@ facts from web searches.
   The system default `g++` is 15 and **rejects `-freflection`**.
 - Build with: `cmake -S . -B build -DCMAKE_CXX_COMPILER=g++-16
   -DCMAKE_BUILD_TYPE=Release` (protobuf is fetched on first configure;
-  offline: `-DFETCHCONTENT_SOURCE_DIR_PROTOBUF=$PWD/protobuf-3.21.12`)
+  offline: `-DFETCHCONTENT_SOURCE_DIR_PROTOBUF=$PWD/protobuf-3.21.12`;
+  GitHub unreachable: add `-DRPB_PROTOBUF_REPO=https://ghfast.top/https://github.com/protocolbuffers/protobuf.git`)
 - Flags: `-std=c++26 -freflection`. Contracts are on by default in C++26;
   `-fno-contracts` disables them. `-fno-exceptions -fno-rtti` are safe (no
   exceptions/RTTI used) and shrink the dynamic binary ~17%.
@@ -198,9 +202,12 @@ reflection-generated getopt table, `#embed` prime tables, contracts, and
   `std::meta::extract`.  Known fields serialize in ascending field-number
   order (compile-time table, consteval `std::sort`); declaration order is
   irrelevant.  Validated at compile time: missing annotation, duplicate or
-  zero field numbers, `OneOf` annotation-count mismatch, `unique_ptr`
+  zero field numbers, field numbers outside `[1, 536870911]` (the 29-bit
+  protobuf tag limit), `OneOf` annotation-count mismatch, `unique_ptr`
   pointee not a message type, and vector/map/optional/oneof/`UnknownFields`
-  alternatives all `static_assert`.
+  alternatives all `static_assert`.  The same `check_layout` validation is
+  applied to proto2 group bodies (`serialize_to_cos` / `parse_group_body`),
+  which bypass the ordinary `serialize`/`parse` entry points.
 - Type mapping: string/bytes -> LEN; integral/enum -> varint (sign-extended);
   `SInt<T>` -> zigzag varint; `Fixed32/SFixed32` -> 4-byte LE;
   `Fixed64/SFixed64` -> 8-byte LE; float/double -> 4/8-byte LE; packable
@@ -224,10 +231,13 @@ reflection-generated getopt table, `#embed` prime tables, contracts, and
   present-but-empty); optionals-with-value and non-null `unique_ptr` always
   serialize; empty repeated string elements still emit.  `rpb::deep_equal`
   compares messages with unique_ptr members by dereferencing recursively
-  (containers/strings use `==`; variants compare by index and recurse into
-  the active alternative, since variant `==` would compare unique_ptr
-  alternatives by pointer; everything else is compared member-wise via
-  reflection).  `rpb::deep_copy` is the symmetric value-copy helper:
+  (vectors/maps/optionals recurse element-wise, so containers of messages
+  with unique_ptr members compare by value too; `std::vector<bool>` uses
+  `==` because its bit proxies have no reference type; variants compare by
+  index and recurse into the active alternative, since variant `==` would
+  compare unique_ptr alternatives by pointer; everything else is compared
+  member-wise via reflection).  `rpb::deep_copy` is the symmetric
+  value-copy helper:
   containers/variants/optionals are rebuilt element-wise and unique_ptr
   members allocate fresh pointees, so structs with unique_ptr members get
   protobuf-style deep-copy semantics without hand-written copy
@@ -260,27 +270,48 @@ reflection-generated getopt table, `#embed` prime tables, contracts, and
   vendored 3.21 `cmake/conformance.cmake` omits `conformance_test_main.cc`
   and `text_format_conformance_suite.cc` (no `main()`, link failure), so
   `cmake/protobuf-conformance.patch` is applied via `PATCH_COMMAND`.
-  Status: 637 proto3 binary `protobuf_test` cases pass (incl.
-  message-merge semantics, present-empty messages via `unique_ptr`,
-  unknown-field preservation); JSON/text/proto2 categories are skipped by
-  the adapter.  Merge support came from parsing
-  repeated occurrences of singular/oneof message fields into the existing
-  value instead of replacing; RECOMMENDED-level packed/unpacked output-form
-  alternatives show up as warnings only (not enforced): 14 cases, both
-  encodings are legal, and `tests/conformance_failures.txt` documents them
-  as evaluated-and-accepted while listing no actual failures.
+  Status: proto3 binary/JSON + proto2 binary/JSON walk is green
+  (`1938 successes, 0 unexpected failures, 1 expected failure`), text walk
+  `116 successes, 0 unexpected failures` (2026-11 audit).  The expected
+  failure is `Recommended.Proto3.JsonInput.FieldMaskInvalidCharacter`:
+  our FieldMask parser accepts `_` exactly like protobuf's own C++
+  implementation (which lists the same test in `failure_list_cpp.txt`), so
+  `tests/conformance_failures.txt` documents it.  Merge support came from
+  parsing repeated occurrences of singular/oneof message fields into the
+  existing value instead of replacing; RECOMMENDED-level packed/unpacked
+  output-form alternatives show up as warnings only (not enforced).
 - Codec guards: `kMaxSerializeDepth` (64) bounds **cumulative** nesting on
   both sides via thread_local counters (`serialize_depth_v`,
-  `parse_depth_v`) incremented at every recursive `serialize()`/`parse()`
-  entry - all nested messages recurse through those two functions, so one
-  counter covers map values / vector elements / unique_ptr / optional /
-  plain struct members.  Per-stream `SetRecursionLimit(...)` remains as
-  belt-and-suspenders, but note it resets per nested `parse()` call (each
-  level builds a fresh CodedInputStream), which is why the cumulative
+  `parse_depth_v`) incremented at every recursive `serialize_to_cos()` /
+  `parse()` / `parse_group_body()` entry - this covers map values / vector
+  elements / unique_ptr / optional / plain struct members **and** proto2
+  group bodies.  Unknown-group skipping has its own bounded counter
+  (`skip_depth_v`) so hostile nested START_GROUP input returns false
+  instead of overflowing the stack.  Per-stream `SetRecursionLimit(...)`
+  remains as belt-and-suspenders, but it resets per nested `parse()` call
+  (each level builds a fresh CodedInputStream), which is why the cumulative
   counter exists.  Over-deep serialize trips a `contract_assert` and
   aborts; over-deep parse returns false (documented asymmetry).
   `optional<T>` message members merge on repeated occurrences
   (scalar/string stay last-wins), matching plain-member/oneof behavior.
+- Strict wire parsing (2026-11 audit): LEN prefixes are read as 64-bit and
+  rejected if they exceed `INT_MAX` or the bytes remaining in the current
+  limit (a 6-byte input cannot trigger a 4 GiB allocation); tag varints are
+  limited to 5 bytes and field numbers to 29 bits; a literal `0x00` tag,
+  a truncated tag, trailing garbage, or a truncated payload is a parse
+  error rather than clean EOF.  A known field number carrying an
+  unexpected wire type is treated as an **unknown** field (skip/capture),
+  matching protobuf; a known field with the correct wire type but a
+  malformed payload is a hard error (no unknown-field resynchronisation).
+  Packed repeated fields accept the packed form (wt 2) or one element with
+  its own wire type, and reject illegal wire types (3/4/5/7 mismatches).
+- `-0.0` is a present float/double value (raw-bits comparison), not the
+  proto3 default: it serializes and survives round-trips.
+- JSON/text format: JSON is implemented in `src/json.hpp` (proto3 mapping,
+  WKTs, Any registry, top-level WKT dispatch); text format in
+  `src/text_format.hpp` (proto2 groups, `google.protobuf.Value` field
+  names, octal/hex ints, duplicate-field rejection, `f` float suffix).
+  Known intentional deviations are listed in `docs/bug-audit-2026-11.md`.
 - Benchmarks: `bench/bench.cpp` (target `bench`, not a ctest) compares the
   reflection codec against protoc-generated code on the same
   TestAllTypesProto3 fixture; timing uses only std::chrono.  On the current
