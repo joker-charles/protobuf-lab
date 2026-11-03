@@ -152,10 +152,20 @@ struct ListValue;
 
 // google.protobuf.Value: oneof of six kinds.  struct/list alternatives
 // break the mutual recursion through unique_ptr.
+//
+// The per-alternative proto field names are declared with rpb::name
+// annotations (same order as the field_no annotations and the variant
+// alternatives: null_value, number_value, string_value, bool_value,
+// struct_value, list_value).  Only the text-format layer reads them --
+// annotation_count() counts field_no annotations only and json.hpp handles
+// Value natively -- so the wire/JSON behavior is unchanged.
 struct Value
 {
   [[=rpb::field_no<1>{}, =rpb::field_no<2>{}, =rpb::field_no<3>{},
-    =rpb::field_no<4>{}, =rpb::field_no<5>{}, =rpb::field_no<6>{}]]
+    =rpb::field_no<4>{}, =rpb::field_no<5>{}, =rpb::field_no<6>{},
+    =rpb::name<"null_value">{}, =rpb::name<"number_value">{},
+    =rpb::name<"string_value">{}, =rpb::name<"bool_value">{},
+    =rpb::name<"struct_value">{}, =rpb::name<"list_value">{}]]
   rpb::OneOf<NullValue, double, std::string, bool,
              std::unique_ptr<StructValue>, std::unique_ptr<ListValue>>
       kind;
