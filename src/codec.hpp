@@ -45,8 +45,10 @@
 #include <algorithm>
 #include <array>
 #include <bit>
+#include <cmath>
 #include <cstdint>
 #include <cstdlib>
+#include <limits>
 #include <map>
 #include <memory>
 #include <optional>
@@ -83,6 +85,17 @@ namespace meta = std::meta;
 inline constexpr std::size_t kMaxSerializeDepth = 64;
 inline thread_local std::size_t serialize_depth_v = 0;
 inline thread_local std::size_t parse_depth_v = 0;
+// Unknown-group skipping recurses too; bound it independently so a stream
+// full of nested START_GROUP tags cannot smash the stack.
+inline thread_local std::size_t skip_depth_v = 0;
+
+// RAII increment/decrement for the cumulative nesting counters.
+template <typename Counter> struct counter_scope
+{
+  Counter &counter;
+  explicit counter_scope(Counter &c) : counter(c) { ++counter; }
+  ~counter_scope() { --counter; }
+};
 
 // Reusable per-thread scratch buffers for embedded-message / map-entry /
 // packed payloads.  Chunk building is strictly LIFO (nested messages
@@ -431,6 +444,32 @@ inline constexpr bool is_wire_wrapper_v =
 template <typename T>
 inline constexpr bool is_packable_v = is_numeric_v<T> || is_wire_wrapper_v<T>;
 
+// Wire type a field of C++ type T must use.  Used to reject illegal wire
+// types on known fields (protobuf treats a mismatching wire type as an
+// unknown field in a map entry, and as a parse error elsewhere).
+template <typename T>
+consteval int expected_wire_type_of()
+{
+  using U = std::remove_cvref_t<T>;
+  if constexpr (is_unpacked_wrapper_v<U>)
+    return expected_wire_type_of<decltype(U::value)>();
+  else if constexpr (is_optional_v<U>)
+    return expected_wire_type_of<typename U::value_type>();
+  else if constexpr (is_unique_ptr_v<U>)
+    return 2;  // singular message: length-delimited
+  else if constexpr (is_sint_wrapper_v<U> || std::is_integral_v<U>
+                     || std::is_enum_v<U>)
+    return 0;
+  else if constexpr (is_fixed_wrapper_v<U>)
+    return sizeof(decltype(U::value)) == 4 ? 5 : 1;
+  else if constexpr (std::is_floating_point_v<U>)
+    return sizeof(U) == 4 ? 5 : 1;
+  else
+    return 2;  // string / bytes / message / map entry
+}
+template <typename T>
+inline constexpr int expected_wire_type_v = expected_wire_type_of<T>();
+
 // --- unknown-field preservation -----------------------------------------
 // A struct may carry a member of type UnknownFields; fields the codec does
 // not recognize are captured there and re-emitted verbatim after the known
@@ -496,7 +535,9 @@ bool is_default_value(M const &v)
   if constexpr (std::is_integral_v<M> || std::is_enum_v<M>)
     return underlying_value(v) == underlying_value(M{});
   else if constexpr (std::is_floating_point_v<M>)
-    return v == 0.0;
+    // protobuf compares the raw bits: -0.0 is *not* the default encoding
+    // (it serializes as a present 0x80000000 / 0x8000... field).
+    return v == 0.0 && !std::signbit(v);
   else if constexpr (std::is_same_v<M, std::string>)
     return v.empty();
   else if constexpr (is_sint_wrapper_v<M>)
@@ -581,7 +622,8 @@ struct FieldEntry
 template <typename T, std::size_t... Is>
 consteval std::size_t field_table_size_impl(std::index_sequence<Is...>)
 {
-  return (annotation_count<member_v<T, Is>>() + ...);
+  // Explicit identity so a zero-member message (legal protobuf) compiles.
+  return (std::size_t{0} + ... + annotation_count<member_v<T, Is>>());
 }
 
 template <typename T>
@@ -737,8 +779,8 @@ consteval bool layout_numbers_ok()
   constexpr auto table = field_table<T>();
   for (std::size_t i = 0; i < table.size(); ++i)
     {
-      if (table[i].fieldno == 0)
-        return false;
+      if (table[i].fieldno == 0 || table[i].fieldno > 0x1FFFFFFFu)
+        return false;  // protobuf tag: field numbers are 29-bit
       if (i > 0 && table[i - 1].fieldno == table[i].fieldno)
         return false;
     }
@@ -761,8 +803,8 @@ consteval void check_layout()
                 "(not string/vector/map/optional/oneof/wrappers/"
                 "UnknownFields)");
   static_assert(layout_numbers_ok<T>(),
-                "rpb: field numbers must be >= 1 and unique within a "
-                "message");
+                "rpb: field numbers must be in [1, 536870911] and unique "
+                "within a message");
 }
 
 // --- serialization ---
@@ -990,6 +1032,16 @@ template <typename T> struct GroupInner<std::optional<T>>
 {
   using type = T;
 };
+// Presence holders (unique_ptr / optional) serialize a group whenever they
+// are engaged, even if the body is empty.  A bare struct member has value
+// semantics, so an all-default body is omitted like any plain nested
+// message (otherwise serialize(default) would invent a START/END pair).
+template <typename M> struct GroupHasPresence : std::false_type {};
+template <typename T>
+struct GroupHasPresence<std::unique_ptr<T>> : std::true_type {};
+template <typename T>
+struct GroupHasPresence<std::optional<T>> : std::true_type {};
+
 // Read a const pointer to the group member's inner message.  Struct partial
 // specialization (rather than function overloading) is used because GCC 16
 // does not order the unique_ptr/optional function-template overloads above
@@ -1100,10 +1152,16 @@ void serialize_entry_group(std::true_type,
   // Emit START_GROUP only when the presence-holding member is set.  The
   // group body is the member's inner message struct, serialized directly
   // (its own members carry their field numbers).
-  using Inner = typename GroupInner<M>::type;
   auto const *inner = GroupPtr<M>::get(v.[:r:]);
   if (!inner)
     return;
+  if constexpr (!GroupHasPresence<M>::value)
+    {
+      // Bare struct group: no presence bit exists, so omit the group when
+      // its body is all-default (matches plain nested-message semantics).
+      if (is_empty_message(*inner))
+        return;
+    }
   cos.WriteTag((FNO << 3) | 3);
   serialize_to_cos(cos, *inner);
   cos.WriteTag((FNO << 3) | 4);
@@ -1119,6 +1177,12 @@ void serialize_entry(google::protobuf::io::CodedOutputStream &cos, T const &v)
 template <typename T>
 void serialize_to_cos(google::protobuf::io::CodedOutputStream &cos, T const &v)
 {
+  // Group bodies are serialized directly through this function (bypassing
+  // serialize()), so both the layout validation and the cumulative depth
+  // guard must live here to cover every nested message path.
+  check_layout<T>();
+  counter_scope depth(serialize_depth_v);
+  contract_assert(serialize_depth_v <= kMaxSerializeDepth);
   template for (constexpr auto e : std::define_static_array(field_table<T>()))
     {
       serialize_entry<T, e.fieldno, e.member, e.alt>(cos, v);
@@ -1134,13 +1198,9 @@ void serialize_to_cos(google::protobuf::io::CodedOutputStream &cos, T const &v)
 template <typename T>
 void serialize(std::string &out, T const &v)
 {
-  check_layout<T>();
-  ++serialize_depth_v;
-  contract_assert(serialize_depth_v <= kMaxSerializeDepth);
   google::protobuf::io::StringOutputStream sos(&out);
   google::protobuf::io::CodedOutputStream cos(&sos);
   serialize_to_cos(cos, v);
-  --serialize_depth_v;
 }
 
 // --- parsing ---
@@ -1221,6 +1281,47 @@ bool read_packed_element(google::protobuf::io::CodedInputStream &cis, U &out)
 inline bool skip_field(google::protobuf::io::CodedInputStream &cis,
                        std::uint32_t fieldno, std::uint32_t wt);
 
+// Strict length-prefix reader.  CodedInputStream::ReadVarint32 silently
+// truncates varints wider than 32 bits and ReadRaw(int) cannot represent
+// sizes above INT_MAX, so read the full 64-bit value first and require it
+// to fit both INT_MAX and the bytes remaining in the current limit.  This
+// is what prevents a 6-byte input from requesting a 4 GiB allocation.
+inline bool read_length(google::protobuf::io::CodedInputStream &cis,
+                        std::uint32_t &len)
+{
+  std::uint64_t raw;
+  if (!cis.ReadVarint64(&raw))
+    return false;
+  constexpr std::uint64_t max_len =
+      static_cast<std::uint64_t>(std::numeric_limits<std::int32_t>::max());
+  if (raw > max_len)
+    return false;
+  if (cis.BytesUntilLimit() >= 0
+      && raw > static_cast<std::uint64_t>(cis.BytesUntilLimit()))
+    return false;
+  len = static_cast<std::uint32_t>(raw);
+  return true;
+}
+
+// Read one tag, rejecting field numbers above the 29-bit protobuf limit
+// and tag varints wider than 5 bytes.  CodedInputStream::ReadTag uses the
+// 32-bit varint reader, which silently truncates over-long encodings, so
+// the raw width has to be checked through the current stream position.
+inline bool read_tag_checked(google::protobuf::io::CodedInputStream &cis,
+                             std::uint32_t &tag)
+{
+  int before = cis.CurrentPosition();
+  tag = cis.ReadTag();
+  int consumed = cis.CurrentPosition() - before;
+  if (tag == 0)
+    return true;  // EOF / invalid; caller distinguishes via position
+  if (consumed > 5)
+    return false;
+  if ((tag >> 3) == 0 || (tag >> 3) > 0x1FFFFFFFu)
+    return false;
+  return true;
+}
+
 // Reads a length-delimited payload (wire type 2) into `payload`.
 bool read_message_payload(google::protobuf::io::CodedInputStream &cis,
                           std::uint32_t wt, std::string &payload)
@@ -1228,7 +1329,7 @@ bool read_message_payload(google::protobuf::io::CodedInputStream &cis,
   if (wt != 2)
     return false;
   std::uint32_t len;
-  if (!cis.ReadVarint32(&len))
+  if (!read_length(cis, len))
     return false;
   payload.assign(static_cast<std::size_t>(len), '\0');
   return cis.ReadRaw(payload.data(), static_cast<int>(len));
@@ -1247,7 +1348,7 @@ bool parse_value(google::protobuf::io::CodedInputStream &cis, std::uint32_t wt,
       if (wt != 2)
         return false;
       std::uint32_t len;
-      if (!cis.ReadVarint32(&len))
+      if (!read_length(cis, len))
         return false;
       // protobuf 3.21's ReadRaw(void*, int) copies into a caller buffer
       // (newer versions use a const void** out-parameter instead).
@@ -1344,7 +1445,7 @@ bool parse_value(google::protobuf::io::CodedInputStream &cis, std::uint32_t wt,
       if (wt != 2)
         return false;
       std::uint32_t len;
-      if (!cis.ReadVarint32(&len))
+      if (!read_length(cis, len))
         return false;
       std::string payload(static_cast<std::size_t>(len), '\0');
       if (!cis.ReadRaw(payload.data(), static_cast<int>(len)))
@@ -1357,21 +1458,42 @@ bool parse_value(google::protobuf::io::CodedInputStream &cis, std::uint32_t wt,
           payload.data(), static_cast<int>(payload.size()));
       google::protobuf::io::CodedInputStream ecis(&ais);
       ecis.SetRecursionLimit(static_cast<int>(kMaxSerializeDepth));
+      ecis.PushLimit(static_cast<int>(payload.size()));
       for (;;)
         {
-          std::uint32_t tag = ecis.ReadTag();
+          int before = ecis.CurrentPosition();
+          std::uint32_t tag;
+          if (!read_tag_checked(ecis, tag))
+            return false;
           if (tag == 0)
-            break;
+            {
+              if (before == static_cast<int>(payload.size()))
+                break;  // clean end of the map-entry payload
+              return false;  // zero/truncated tag inside the entry
+            }
           std::uint32_t fn = tag >> 3;
           std::uint32_t w = tag & 7;
           if (fn == 1)
             {
-              if (!parse_value(ecis, w, k))
+              // protobuf treats a key/value field with the wrong wire type
+              // as an unknown field of the map entry: skip it and let the
+              // default key/value stand.
+              if (w != static_cast<std::uint32_t>(expected_wire_type_v<K>))
+                {
+                  if (!skip_field(ecis, fn, w))
+                    return false;
+                }
+              else if (!parse_value(ecis, w, k))
                 return false;
             }
           else if (fn == 2)
             {
-              if (!parse_value(ecis, w, v))
+              if (w != static_cast<std::uint32_t>(expected_wire_type_v<V>))
+                {
+                  if (!skip_field(ecis, fn, w))
+                    return false;
+                }
+              else if (!parse_value(ecis, w, v))
                 return false;
             }
           else
@@ -1391,7 +1513,10 @@ bool parse_value(google::protobuf::io::CodedInputStream &cis, std::uint32_t wt,
           if (wt != 2)
             {
               // Accept a single unpacked element too; protobuf parsers
-              // accept both packed and unpacked forms for repeated numerics.
+              // accept both packed and unpacked forms for repeated numerics,
+              // but only with the element's own wire type.
+              if (wt != static_cast<std::uint32_t>(expected_wire_type_v<U>))
+                return false;
               U e;
               if (!read_packed_element(cis, e))
                 return false;
@@ -1399,7 +1524,7 @@ bool parse_value(google::protobuf::io::CodedInputStream &cis, std::uint32_t wt,
               return true;
             }
           std::uint32_t len;
-          if (!cis.ReadVarint32(&len))
+          if (!read_length(cis, len))
             return false;
           auto limit = cis.PushLimit(static_cast<int>(len));
           while (cis.BytesUntilLimit() > 0)
@@ -1505,6 +1630,45 @@ template <typename Inner>
 bool parse_group_body(google::protobuf::io::CodedInputStream &cis,
                       std::uint32_t fieldno, Inner &out);
 
+// Result of dispatching a tag through the compile-time field table.  The
+// distinction between "no row matches this field number" (unknown field:
+// capture/skip) and "row matches but the payload is invalid" (parse error:
+// reject, the stream has already been consumed) is required for correct
+// failure behaviour; a plain bool conflated the two and let the parser
+// resynchronise on garbage.
+enum class parse_table_result { not_found, ok, error };
+
+// Does compile-time table row R accept wire type `wt`?  Protobuf treats a
+// known field number carrying an unexpected wire type as an *unknown*
+// field (skip/capture), not as a parse error; a matching wire type with a
+// malformed payload is a hard error.  Packable repeated fields accept the
+// packed form (wire type 2) as well as one unpacked element.
+template <typename T, std::size_t R>
+bool row_accepts_wire_type(std::uint32_t wt)
+{
+  constexpr auto row = field_table<T>()[R];
+  constexpr meta::info r = member_v<T, row.member>;
+  using M = typename [: meta::type_of(r) :];
+  if constexpr (member_is_group_ann<r>())
+    return wt == 3;  // START_GROUP
+  else if constexpr (row.alt != 0)
+    {
+      using Alt = std::variant_alternative_t<row.alt, M>;
+      return wt == static_cast<std::uint32_t>(expected_wire_type_v<Alt>);
+    }
+  else if constexpr (is_vector_v<M>)
+    {
+      using U = typename M::value_type;
+      if constexpr (is_packable_v<U>)
+        return wt == 2
+               || wt == static_cast<std::uint32_t>(expected_wire_type_v<U>);
+      else
+        return wt == static_cast<std::uint32_t>(expected_wire_type_v<U>);
+    }
+  else
+    return wt == static_cast<std::uint32_t>(expected_wire_type_v<M>);
+}
+
 template <typename T, std::size_t R>
 bool parse_table_row(google::protobuf::io::CodedInputStream &cis,
                      std::uint32_t fieldno, std::uint32_t wt, T &v)
@@ -1528,11 +1692,12 @@ bool parse_table_row(google::protobuf::io::CodedInputStream &cis,
 }
 
 template <typename T, std::size_t Lo, std::size_t Hi>
-bool parse_table_range(google::protobuf::io::CodedInputStream &cis,
-                       std::uint32_t fieldno, std::uint32_t wt, T &v)
+parse_table_result parse_table_range(google::protobuf::io::CodedInputStream &cis,
+                                     std::uint32_t fieldno, std::uint32_t wt,
+                                     T &v)
 {
   if constexpr (Lo == Hi)
-    return false;  // no row carries this field number
+    return parse_table_result::not_found;  // no row carries this field number
   else
     {
       constexpr std::size_t Mid = Lo + (Hi - Lo) / 2;
@@ -1541,13 +1706,25 @@ bool parse_table_range(google::protobuf::io::CodedInputStream &cis,
         return parse_table_range<T, Lo, Mid>(cis, fieldno, wt, v);
       if (fieldno > fn)
         return parse_table_range<T, Mid + 1, Hi>(cis, fieldno, wt, v);
-      return parse_table_row<T, Mid>(cis, fieldno, wt, v);
+      // Wire-type mismatch on a known field: treat it exactly like an
+      // unknown field number (protobuf skips/captures it).
+      if (!row_accepts_wire_type<T, Mid>(wt))
+        return parse_table_result::not_found;
+      return parse_table_row<T, Mid>(cis, fieldno, wt, v)
+                 ? parse_table_result::ok
+                 : parse_table_result::error;
     }
 }
 
-inline bool capture_unknown_field(google::protobuf::io::CodedInputStream &cis,
-                                  std::uint32_t fieldno, std::uint32_t wt,
-                                  UnknownFields &out)
+// Result of trying to capture an unknown field.  Groups (wire types 3/4)
+// are not captured but may still be skipped; a malformed payload is a hard
+// error (the stream has already consumed bytes and must not be retried from
+// a different position).
+enum class capture_result { captured, unsupported, error };
+
+inline capture_result capture_unknown_field(
+    google::protobuf::io::CodedInputStream &cis, std::uint32_t fieldno,
+    std::uint32_t wt, UnknownFields &out)
 {
   UnknownField uf{fieldno, wt, {}};
   switch (wt)
@@ -1556,7 +1733,7 @@ inline bool capture_unknown_field(google::protobuf::io::CodedInputStream &cis,
       {
         std::uint64_t tmp;
         if (!cis.ReadVarint64(&tmp))
-          return false;
+          return capture_result::error;
         // Re-encode canonically; unknown varints are stored by value, like
         // protobuf's UnknownFieldSet.
         google::protobuf::io::StringOutputStream sos(&uf.raw);
@@ -1567,13 +1744,13 @@ inline bool capture_unknown_field(google::protobuf::io::CodedInputStream &cis,
     case 1:
       uf.raw.resize(8);
       if (!cis.ReadRaw(uf.raw.data(), 8))
-        return false;
+        return capture_result::error;
       break;
     case 2:
       {
         std::uint32_t len;
-        if (!cis.ReadVarint32(&len))
-          return false;
+        if (!read_length(cis, len))
+          return capture_result::error;
         // Store the length prefix inside raw so re-emission is just
         // tag + raw for every wire type.
         std::string head;
@@ -1587,19 +1764,19 @@ inline bool capture_unknown_field(google::protobuf::io::CodedInputStream &cis,
         uf.raw.resize(base + len);
         if (!cis.ReadRaw(uf.raw.data() + static_cast<int>(base),
                          static_cast<int>(len)))
-          return false;
+          return capture_result::error;
         break;
       }
     case 5:
       uf.raw.resize(4);
       if (!cis.ReadRaw(uf.raw.data(), 4))
-        return false;
+        return capture_result::error;
       break;
     default:
-      return false;  // groups (3/4) are skipped, not captured
+      return capture_result::unsupported;  // groups (3/4): skip instead
     }
   out.push_back(std::move(uf));
-  return true;
+  return capture_result::captured;
 }
 
 inline bool skip_field(google::protobuf::io::CodedInputStream &cis,
@@ -1617,23 +1794,32 @@ inline bool skip_field(google::protobuf::io::CodedInputStream &cis,
     case 2:
       {
         std::uint32_t len;
-        if (!cis.ReadVarint32(&len))
+        if (!read_length(cis, len))
           return false;
         return cis.Skip(static_cast<int>(len));
       }
     case 3:  // start group: skip until the matching end-group tag
-      for (;;)
-        {
-          std::uint32_t tag = cis.ReadTag();
-          if (tag == 0)
-            return false;  // truncated group
-          std::uint32_t fn = tag >> 3;
-          std::uint32_t w = tag & 7;
-          if (w == 4)
-            return fn == fieldno;
-          if (!skip_field(cis, fn, w))
-            return false;
-        }
+      {
+        // Bound the recursion: skipping nested unknown groups otherwise
+        // follows untrusted input all the way down the stack.
+        if (skip_depth_v >= kMaxSerializeDepth)
+          return false;
+        counter_scope depth(skip_depth_v);
+        for (;;)
+          {
+            std::uint32_t tag;
+            if (!read_tag_checked(cis, tag))
+              return false;
+            if (tag == 0)
+              return false;  // truncated group
+            std::uint32_t fn = tag >> 3;
+            std::uint32_t w = tag & 7;
+            if (w == 4)
+              return fn == fieldno;
+            if (!skip_field(cis, fn, w))
+              return false;
+          }
+      }
     case 5:
       return cis.Skip(4);
     default:
@@ -1645,28 +1831,43 @@ template <typename Inner>
 bool parse_group_body(google::protobuf::io::CodedInputStream &cis,
                       std::uint32_t fieldno, Inner &out)
 {
+  // Group bodies are parsed here rather than through parse(), so the
+  // layout check and the cumulative nesting guard must be applied here.
+  check_layout<Inner>();
+  if (parse_depth_v >= kMaxSerializeDepth)
+    return false;
+  counter_scope depth(parse_depth_v);
   for (;;)
     {
-      std::uint32_t tag = cis.ReadTag();
+      std::uint32_t tag;
+      if (!read_tag_checked(cis, tag))
+        return false;
       if (tag == 0)
         return false;  // truncated group
       std::uint32_t fn = tag >> 3;
       std::uint32_t w = tag & 7;
       if (w == 4)
         return fn == fieldno;  // end group must match the start group tag
-      if (!parse_table_range<Inner, 0, field_table_size_v<Inner>>(
-              cis, fn, w, out))
+      parse_table_result r
+          = parse_table_range<Inner, 0, field_table_size_v<Inner>>(cis, fn, w,
+                                                                   out);
+      if (r == parse_table_result::ok)
+        continue;
+      if (r == parse_table_result::error)
+        return false;  // known field consumed, payload invalid: reject
+      if constexpr (has_unknown_fields_v<Inner>)
         {
-          if constexpr (has_unknown_fields_v<Inner>)
-            {
-              if (capture_unknown_field(
-                      cis, fn, w,
-                      out.[: member_v<Inner, unknown_member_index_v<Inner>> :]))
-                continue;
-            }
-          if (!skip_field(cis, fn, w))
-            return false;
+          capture_result cr = capture_unknown_field(
+              cis, fn, w,
+              out.[: member_v<Inner, unknown_member_index_v<Inner>> :]);
+          if (cr == capture_result::captured)
+            continue;
+          if (cr == capture_result::error)
+            return false;  // malformed payload: do not resynchronise
+          // unsupported (group): fall through to skip_field below
         }
+      if (!skip_field(cis, fn, w))
+        return false;
     }
 }
 
@@ -1674,6 +1875,8 @@ template <typename T>
 bool parse(std::string_view data, T &v)
 {
   check_layout<T>();
+  if (data.size() > static_cast<std::size_t>(std::numeric_limits<int>::max()))
+    return false;
   // Cumulative nesting guard.  Nested messages recurse through parse()
   // and each level builds a fresh CodedInputStream, so a per-stream
   // SetRecursionLimit would reset per level; the thread_local counter
@@ -1682,37 +1885,52 @@ bool parse(std::string_view data, T &v)
   // documented asymmetry.
   if (parse_depth_v >= kMaxSerializeDepth)
     return false;
-  ++parse_depth_v;
-  struct parse_depth_scope
-  {
-    ~parse_depth_scope() { --parse_depth_v; }
-  } depth_scope;
+  counter_scope depth(parse_depth_v);
   google::protobuf::io::ArrayInputStream ais(data.data(),
                                              static_cast<int>(data.size()));
   google::protobuf::io::CodedInputStream cis(&ais);
   cis.SetRecursionLimit(static_cast<int>(kMaxSerializeDepth));
+  // Give the stream an explicit limit so read_length() can bound length
+  // prefixes by the bytes actually remaining (top-level and every nested
+  // parse() call gets its own exact-sized stream).
+  cis.PushLimit(static_cast<int>(data.size()));
   for (;;)
     {
-      std::uint32_t tag = cis.ReadTag();
+      int before = cis.CurrentPosition();
+      std::uint32_t tag;
+      if (!read_tag_checked(cis, tag))
+        return false;
       if (tag == 0)
-        break;  // clean EOF
+        {
+          // CodedInputStream returns 0 for real EOF *and* for a literal
+          // 0x00 tag or a truncated tag varint.  Only accept the former:
+          // no byte may have been consumed by the failed read.
+          if (before == static_cast<int>(data.size()))
+            break;  // clean EOF
+          return false;
+        }
       std::uint32_t fieldno = tag >> 3;
       std::uint32_t wt = tag & 7;
-      if (fieldno == 0)
-        return false;  // protobuf: field number 0 is an illegal tag
-      if (!parse_table_range<T, 0, field_table_size_v<T>>(
-              cis, fieldno, wt, v))
+      parse_table_result r
+          = parse_table_range<T, 0, field_table_size_v<T>>(cis, fieldno, wt,
+                                                           v);
+      if (r == parse_table_result::ok)
+        continue;
+      if (r == parse_table_result::error)
+        return false;  // known field consumed, payload invalid: reject
+      if constexpr (has_unknown_fields_v<T>)
         {
-          if constexpr (has_unknown_fields_v<T>)
-            {
-              if (capture_unknown_field(
-                      cis, fieldno, wt,
-                      v.[: member_v<T, unknown_member_index_v<T>> :]))
-                continue;
-            }
-          if (!skip_field(cis, fieldno, wt))
-            return false;
+          capture_result cr = capture_unknown_field(
+              cis, fieldno, wt,
+              v.[: member_v<T, unknown_member_index_v<T>> :]);
+          if (cr == capture_result::captured)
+            continue;
+          if (cr == capture_result::error)
+            return false;  // malformed payload: do not resynchronise
+          // unsupported (group): fall through to skip_field below
         }
+      if (!skip_field(cis, fieldno, wt))
+        return false;
     }
   return true;
 }
@@ -1752,10 +1970,37 @@ bool deep_equal(T const &a, T const &b)
       return a && b && deep_equal(*a, *b);
     }
   else if constexpr (std::is_arithmetic_v<T> || std::is_enum_v<T>
-                     || std::is_same_v<T, std::string> || is_vector_v<T>
-                     || is_map_v<T> || is_optional_v<T>
+                     || std::is_same_v<T, std::string>
                      || std::is_same_v<T, UnknownFields>)
     return a == b;
+  else if constexpr (std::is_same_v<T, std::vector<bool>>)
+    return a == b;  // bit proxies have no reference type to recurse into
+  else if constexpr (is_vector_v<T>)
+    {
+      if (a.size() != b.size())
+        return false;
+      for (std::size_t i = 0; i < a.size(); ++i)
+        if (!deep_equal(a[i], b[i]))
+          return false;
+      return true;
+    }
+  else if constexpr (is_map_v<T>)
+    {
+      if (a.size() != b.size())
+        return false;
+      auto ia = a.begin();
+      auto ib = b.begin();
+      for (; ia != a.end(); ++ia, ++ib)
+        if (!(ia->first == ib->first) || !deep_equal(ia->second, ib->second))
+          return false;
+      return true;
+    }
+  else if constexpr (is_optional_v<T>)
+    {
+      if (a.has_value() != b.has_value())
+        return false;
+      return !a.has_value() || deep_equal(*a, *b);
+    }
   else if constexpr (is_one_of_v<T>)
     {
       if (a.index() != b.index())

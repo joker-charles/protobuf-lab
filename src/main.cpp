@@ -3,6 +3,7 @@
 #include "codec.hpp"
 
 #include <algorithm>
+#include <cmath>
 #include <cstdio>
 #include <cstring>
 #include <cstdlib>
@@ -520,6 +521,257 @@ static void test_truncated()
   check(!rpb::parse(bytes, q), "truncated input rejected");
 }
 
+// --- hardening regression fixtures (codec audit 2026-11) ----------------
+
+struct EmptyMsg
+{
+  bool operator==(EmptyMsg const &) const = default;
+};
+struct StrHardMsg
+{
+  rpb::UnknownFields unknown;
+  [[=rpb::field_no<1>{}]] std::string s;
+};
+struct InnerHardMsg
+{
+  [[=rpb::field_no<2>{}]] std::string s;
+};
+struct OuterHardMsg
+{
+  [[=rpb::field_no<5>{}]] InnerHardMsg inner;
+};
+struct PackedHardMsg
+{
+  [[=rpb::field_no<1>{}]] std::vector<std::int32_t> v;
+};
+struct DoubleHardMsg
+{
+  [[=rpb::field_no<1>{}]] double d;
+};
+struct FloatHardMsg
+{
+  [[=rpb::field_no<1>{}]] float f;
+};
+struct MapHardMsg
+{
+  [[=rpb::field_no<1>{}]] std::map<std::string, std::int32_t> m;
+};
+struct GroupInnerHard
+{
+  [[=rpb::field_no<1>{}]] std::int32_t a;
+};
+struct GroupOuterHard
+{
+  [[=rpb::field_no<1>{}, =rpb::group_type{}]] GroupInnerHard g;
+};
+struct RecGroupHard
+{
+  [[=rpb::field_no<1>{}, =rpb::group_type{}]]
+  std::unique_ptr<RecGroupHard> child;
+};
+struct LeafHard
+{
+  [[=rpb::field_no<1>{}]] std::unique_ptr<LeafHard> child;
+  bool operator==(LeafHard const &) const = default;
+};
+struct HolderHard
+{
+  [[=rpb::field_no<1>{}]] std::vector<LeafHard> v;
+  bool operator==(HolderHard const &) const = default;
+};
+struct CaptureHardMsg
+{
+  rpb::UnknownFields unknown;
+  [[=rpb::field_no<1>{}]] std::int32_t x;
+};
+struct GroupCaptureHard
+{
+  rpb::UnknownFields unknown;
+  [[=rpb::field_no<1>{}, =rpb::group_type{}]] GroupInnerHard g;
+};
+
+static std::string from_hex(char const *hex)
+{
+  std::string out;
+  while (*hex)
+    {
+      unsigned v = 0;
+      std::sscanf(hex, "%2x", &v);
+      out.push_back(static_cast<char>(v));
+      hex += 2;
+    }
+  return out;
+}
+
+static void test_hardening()
+{
+  // Empty (zero-member) message: legal protobuf, serializes to nothing.
+  {
+    std::string bytes;
+    rpb::serialize(bytes, EmptyMsg{});
+    EmptyMsg back;
+    check(bytes.empty() && rpb::parse("", back), "empty message roundtrip");
+  }
+
+  // LEN length prefixes must not allocate beyond the remaining input, and
+  // over-wide length varints must be rejected rather than truncated.
+  {
+    StrHardMsg m;
+    check(!rpb::parse(from_hex("0affffffff0f"), m),
+          "huge string length rejected");
+    check(!rpb::parse(from_hex("0a8080808010"), m),
+          "over-wide length varint rejected");
+    check(!rpb::parse(from_hex("9a06ffffffff0f"), m),
+          "huge unknown length rejected");
+  }
+  {
+    PackedHardMsg p;
+    check(!rpb::parse(from_hex("0affffffff0f"), p),
+          "huge packed length rejected");
+  }
+  {
+    MapHardMsg m;
+    check(!rpb::parse(from_hex("0affffffff0f"), m),
+          "huge map-entry length rejected");
+  }
+
+  // A zero tag byte, an over-long tag varint, and trailing/truncated tags
+  // are invalid, not clean EOF.
+  {
+    StrHardMsg m;
+    check(!rpb::parse(from_hex("00"), m), "zero tag rejected");
+    check(!rpb::parse(from_hex("0a016100"), m), "trailing zero tag rejected");
+    check(!rpb::parse(from_hex("0a016180"), m), "truncated tag rejected");
+    check(!rpb::parse(from_hex("90e3bb848ecd2d28"), m),
+          "over-wide tag varint rejected");
+    check(rpb::parse(from_hex("0a0161"), m), "valid string still parses");
+  }
+
+  // A known field whose payload was partially consumed must not fall back
+  // to unknown-field skipping (that used to accept malformed input).
+  {
+    OuterHardMsg o;
+    // field 5 (inner message) length 2, payload = field2 length 5 with no
+    // bytes following: the inner message is truncated.
+    check(!rpb::parse(from_hex("2a021205"), o),
+          "partially consumed known field rejected");
+  }
+
+  // Packed repeated fields accept packed wt2 or the element's own wire
+  // type, and nothing else.
+  {
+    PackedHardMsg p;
+    check(rpb::parse(from_hex("0805"), p) && p.v.size() == 1 && p.v[0] == 5,
+          "unpacked element with correct wire type");
+    PackedHardMsg q;
+    check(rpb::parse(from_hex("0a020506"), q) && q.v.size() == 2,
+          "packed elements");
+    check(!rpb::parse(from_hex("0c"), q), "packed END_GROUP wire type rejected");
+    check(!rpb::parse(from_hex("0b"), q), "packed START_GROUP wire type rejected");
+    check(!rpb::parse(from_hex("0f"), q), "packed wire type 7 rejected");
+    check(!rpb::parse(from_hex("0d"), q), "packed fixed32 wire type rejected");
+  }
+
+  // -0.0 is a present value (raw bits), not the proto3 default.
+  {
+    DoubleHardMsg d;
+    d.d = -0.0;
+    std::string bytes;
+    rpb::serialize(bytes, d);
+    check(bytes == from_hex("090000000000000080"), "-0.0 double serialized");
+    DoubleHardMsg q;
+    check(rpb::parse(bytes, q) && std::signbit(q.d), "-0.0 double parsed");
+  }
+  {
+    FloatHardMsg f;
+    f.f = -0.0f;
+    std::string bytes;
+    rpb::serialize(bytes, f);
+    check(bytes == from_hex("0d00000080"), "-0.0 float serialized");
+  }
+
+  // Map entries: a key/value with the wrong wire type is skipped like an
+  // unknown field (the default key/value stands).
+  {
+    MapHardMsg m;
+    // entry payload: key field1 wt5 (skipped), value field2 varint 1.
+    check(rpb::parse(from_hex("0a070d000000001001"), m) && m.m[""] == 1,
+          "map entry wrong-wire-type key skipped");
+  }
+
+  // proto2 groups: valid body, malformed body, bare-struct empty omission.
+  {
+    GroupOuterHard g;
+    std::string bytes;
+    rpb::serialize(bytes, g);
+    check(bytes.empty(), "empty bare group omitted");
+    GroupOuterHard h;
+    check(rpb::parse(from_hex("0b08010c"), h) && h.g.a == 1,
+          "group body parsed");
+    check(!rpb::parse(from_hex("0b0801"), h), "unterminated group rejected");
+    check(!rpb::parse(from_hex("0b080114"), h), "mismatched end-group rejected");
+    check(rpb::parse(from_hex("0a00"), h),
+          "group field with wrong wire type treated as unknown");
+  }
+
+  // Group nesting is bounded by the same cumulative depth guard as plain
+  // messages (root counts as one level).
+  {
+    auto nested_groups = [](int n) {
+      std::string b;
+      for (int i = 0; i < n; ++i)
+        b.push_back(static_cast<char>(0x0b));  // field 1 START_GROUP
+      for (int i = 0; i < n; ++i)
+        b.push_back(static_cast<char>(0x0c));  // field 1 END_GROUP
+      return b;
+    };
+    RecGroupHard r;
+    check(rpb::parse(nested_groups(63), r), "group depth-64 accepted");
+    RecGroupHard s;
+    check(!rpb::parse(nested_groups(64), s), "group depth-65 rejected");
+  }
+
+  // Unknown-group skipping must not recurse without bound.
+  {
+    StrHardMsg m;
+    std::string b;
+    for (int i = 0; i < 100; ++i)
+      {
+        b.push_back(static_cast<char>(0x9b));
+        b.push_back(static_cast<char>(0x06));  // field 99 START_GROUP
+      }
+    for (int i = 0; i < 100; ++i)
+      {
+        b.push_back(static_cast<char>(0x9c));
+        b.push_back(static_cast<char>(0x06));  // field 99 END_GROUP
+      }
+    check(!rpb::parse(b, m), "nested unknown groups rejected at depth limit");
+  }
+
+  // An unknown LEN field whose length prefix promises more bytes than the
+  // input holds is a malformed payload, not a skippable unknown field: after
+  // read_length() consumed the prefix, the parser must not retry skip_field
+  // from the new stream position (that used to accept the input silently).
+  {
+    CaptureHardMsg m;
+    check(!rpb::parse(from_hex("0a030102"), m),
+          "truncated unknown LEN payload rejected");
+    GroupCaptureHard g;
+    check(!rpb::parse(from_hex("0b0a0501020c"), g),
+          "truncated unknown LEN payload inside group rejected");
+  }
+
+  // deep_equal must recurse through containers (deep_copy gives fresh
+  // unique_ptr storage, so the defaulted operator== would say false).
+  {
+    HolderHard a;
+    a.v.resize(1);
+    a.v[0].child = std::make_unique<LeafHard>();
+    HolderHard b = rpb::deep_copy(a);
+    check(rpb::deep_equal(a, b), "deep_equal recurses through vector");
+  }
+}
+
 static void run_tests()
 {
   test_hand_bytes();
@@ -535,6 +787,7 @@ static void run_tests()
   test_unknown_field();
   test_group_skip();
   test_truncated();
+  test_hardening();
 }
 
 static void emit_fixture()
