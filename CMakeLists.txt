@@ -45,6 +45,10 @@ set(PB_INC ${protobuf_SOURCE_DIR}/src)
 function(reflect_compile tgt)
   target_compile_options(${tgt} PRIVATE -freflection -Wall -Wextra
                          -Wpedantic -Wconversion)
+  # The umbrella headers (src/codec.hpp, src/json.hpp, ...) include the
+  # split implementation headers as "rpb/...", so the header root must be on
+  # the include path.  Consumers get it from the rpb INTERFACE target.
+  target_include_directories(${tgt} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
   target_include_directories(${tgt} PRIVATE SYSTEM ${PB_INC})
   target_link_libraries(${tgt} PRIVATE protobuf::libprotobuf)
 endfunction()
@@ -67,7 +71,17 @@ target_link_libraries(example PRIVATE rpb)
 include(CMakePackageConfigHelpers)
 include(GNUInstallDirs)
 
-install(FILES src/codec.hpp DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
+# The public umbrella headers plus the internal rpb/ header tree.  Consumers
+# still include "codec.hpp" (or "json.hpp" / "text_format.hpp"); the split
+# headers are implementation details but must be installed for the
+# header-only target to work after `cmake --install`.
+install(FILES
+  src/codec.hpp
+  src/json.hpp
+  src/text_format.hpp
+  src/test_messages.hpp
+  DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
+install(DIRECTORY src/rpb DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
 install(TARGETS rpb EXPORT rpbTargets)
 
 set(RPB_CMAKE_INSTALL_DIR ${CMAKE_INSTALL_LIBDIR}/cmake/rpb)

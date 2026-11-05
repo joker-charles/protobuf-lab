@@ -107,3 +107,28 @@ cmake -S . -B build -DCMAKE_CXX_COMPILER=g++-16 -DCMAKE_BUILD_TYPE=Release \
 cmake --build build -j"$(nproc)"
 ctest --test-dir build --output-on-failure
 ```
+
+## 6. Header split (2026-11, pure refactor)
+
+The monolithic headers were split without changing the public API (`#include
+"codec.hpp"`, `"json.hpp"`, `"text_format.hpp"` keep working):
+
+| Umbrella | Split into |
+|---|---|
+| `src/codec.hpp` | `src/rpb/{annotations,traits,layout,wire,group,core,serialize,parse,deep}.hpp` |
+| `src/json.hpp` | `src/rpb/json/{dom,wkt,fwd,parse,print,any}.hpp` |
+| `src/text_format.hpp` | `src/rpb/text/{lexer,any_fwd,any,parse,print}.hpp` |
+
+Every sub-header is `#pragma once` and self-contained; the umbrella includes
+them in dependency order.  Cyclic dependencies (Any registry <-> parse/print)
+are broken with dedicated `fwd`/`any_fwd` headers.  The split is pure code motion modulo two deliberate cleanups: the unused
+`member_inner_ptr` helper overloads and one duplicate pair of forward
+declarations were dropped.  This was verified at token level (comment/
+whitespace-insensitive token multisets and order-preserving subsequences
+against the original files); behavior is unchanged:
+
+- `ctest` 8/8, conformance `1938/1 + 116/0`, `interop*` byte-identical.
+- An installed-header consumer (`cmake --install`, then compile with only
+  `-I <prefix>/include`) exercises wire + JSON + text round-trips.
+- CMake: `reflect_compile` adds the `src/` include root for in-tree targets,
+  and `install` now ships the umbrella headers plus the `rpb/` tree.

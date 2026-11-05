@@ -202,13 +202,22 @@ serialize / 0.87x parse，两边都快约 14%）。靠两个分派级优化实�
 ## 仓库结构
 
 ```
-src/            codec.hpp + 自测/CLI 二进制
+src/            公共 umbrella 头（codec.hpp、json.hpp、text_format.hpp、
+                test_messages.hpp）+ 自测/CLI 二进制
+src/rpb/        codec 实现头：annotations/traits/layout/wire/group/core/
+                serialize/parse/deep
+src/rpb/json/   JSON 实现头：dom/wkt/fwd/parse/print/any
+src/rpb/text/   text format 实现头：lexer/any_fwd/any/parse/print
 bench/          rpb 对比 protobuf 的微基准（非 ctest）
 tests/          test.proto、参考 fixture、interop/conformance 脚本
 cmake/          protobuf conformance.cmake 补丁（PATCH_COMMAND 自动应用）
 docs/           GCC 16 反射错误记录、2026-11 缺陷审计
 verification/   单文件编译器行为探针（run.sh）
 ```
+
+umbrella 头保持公共 include 名称稳定；`rpb/` 子头是实现细节（均
+`#pragma once` 且自包含）。`cmake --install` 会同时安装 umbrella 与
+`rpb/` 目录，`rpb` INTERFACE target 负责传播头文件根目录。
 
 ## 已知限制
 

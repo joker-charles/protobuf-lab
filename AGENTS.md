@@ -11,6 +11,33 @@ networks where GitHub is unreachable use the `RPB_PROTOBUF_REPO` cache
 variable with a mirror, e.g.
 `-DRPB_PROTOBUF_REPO=https://ghfast.top/https://github.com/protocolbuffers/protobuf.git`.
 
+## Header layout (2026-11)
+
+The once-monolithic headers are split; **public include names are unchanged**:
+
+- Umbrellas: `src/codec.hpp`, `src/json.hpp`, `src/text_format.hpp` (plus
+  the conformance mirror `src/test_messages.hpp`).  Consumers keep including
+  these names.
+- `src/rpb/*.hpp`: codec internals - `annotations` (P3394R4 annotations and
+  member reflection), `traits` (wire wrappers + type traits), `layout`
+  (field table + `check_layout`), `wire` (zigzag), `group` (proto2 group
+  presence helpers), `core` (depth guards/scratch/default omission),
+  `serialize`, `parse`, `deep` (`deep_equal`/`deep_copy`).
+- `src/rpb/json/*.hpp`: `dom` (DOM/JSON parser/base64/name mapping), `wkt`
+  (WKT traits + Timestamp/Duration/FieldMask), `fwd`, `parse`, `print`,
+  `any` (Any registry; `fwd` breaks the parse<->print<->Any cycle).
+- `src/rpb/text/*.hpp`: `lexer`, `any_fwd`, `any`, `parse`, `print`.
+- Each sub-header is `#pragma once` and self-contained (includes its
+  dependencies); the umbrella includes them in dependency order.  The
+  include root is `src/` (`#include "rpb/..."`): CMake's `reflect_compile`
+  adds it for in-tree targets, the `rpb` INTERFACE target propagates it to
+  consumers, and `cmake --install` installs `src/*.hpp` plus `src/rpb/`.
+- Behavioral verification for the split: pure code motion (no semantic
+  change; only dead `member_inner_ptr` overloads and one duplicate forward
+  declaration pair were dropped), token-level equivalence against the
+  pre-split files, `ctest` 8/8, conformance 1938/1 + 116/0, and an
+  installed-header consumer compile/run.
+
 The document below is the accumulated, **verified** modern-C++ knowledge from
 the coreutils factor pilot and this session. Read it before writing any
 C++20/23/26 code; it exists so a fresh context does not have to relearn these

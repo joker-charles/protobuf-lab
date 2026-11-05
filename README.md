@@ -225,13 +225,24 @@ and is order-independent.
 ## Repository layout
 
 ```
-src/            codec.hpp + selftest/CLI binaries
+src/            public umbrella headers (codec.hpp, json.hpp,
+                text_format.hpp, test_messages.hpp) + CLI/selftests
+src/rpb/        codec implementation headers: annotations, traits, layout,
+                wire, group, core, serialize, parse, deep
+src/rpb/json/   JSON implementation headers: dom, wkt, fwd, parse, print, any
+src/rpb/text/   text-format implementation headers: lexer, any_fwd, any,
+                parse, print
 bench/          rpb-vs-protobuf micro-benchmark (not a ctest)
 tests/          test.proto, reference fixtures, interop/conformance scripts
 cmake/          protobuf conformance.cmake patch (applied via PATCH_COMMAND)
 docs/           GCC 16 reflection error log, 2026-11 bug audit
 verification/   one-file compiler-behavior probes (run.sh)
 ```
+
+The umbrella headers keep the public include names stable; the `rpb/`
+sub-headers are implementation details (each `#pragma once` and
+self-contained).  `cmake --install` installs both the umbrellas and the
+`rpb/` tree, and the `rpb` INTERFACE target propagates the header root.
 
 ## Known limitations
 
